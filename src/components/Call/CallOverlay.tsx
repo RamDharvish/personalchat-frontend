@@ -103,15 +103,21 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ st
  */
 export const RemoteAudioStreams: React.FC = () => {
   const remoteStreams = useChatStore((state) => state.remoteStreams);
+  const callType = useChatStore((state) => state.callType);
+  const isCallMinimized = useChatStore((state) => state.isCallMinimized);
   const streamEntries = Object.entries(remoteStreams);
 
   if (streamEntries.length === 0) return null;
 
   return (
     <>
-      {streamEntries.map(([socketId, stream]) => (
-        <RemoteAudioPlayer key={socketId} stream={stream} />
-      ))}
+      {streamEntries.map(([socketId, stream], index) => {
+        // In a maximized video call, the primary peer's audio is played directly through RemoteVideoView
+        if (callType === 'video' && !isCallMinimized && index === 0) {
+          return null;
+        }
+        return <RemoteAudioPlayer key={socketId} stream={stream} />;
+      })}
     </>
   );
 };
@@ -140,7 +146,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
     video.playsInline = true;
     video.autoplay = true;
-    video.muted = true; // Audio is played via RemoteAudioStreams to prevent echo and autoplay restrictions
+    video.muted = false; // Primary remote video plays audio and video directly
 
     if (stream) {
       if (video.srcObject !== stream) {
@@ -219,7 +225,6 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         ref={videoRef}
         autoPlay
         playsInline
-        muted
         onLoadedMetadata={() => {
           videoRef.current?.play().catch(() => {});
         }}

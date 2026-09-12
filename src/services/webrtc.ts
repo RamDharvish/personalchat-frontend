@@ -84,12 +84,6 @@ export class WebRTCManager {
         }
       });
 
-      // Attach tracks safely to all existing peer connections
-      this.peerConnections.forEach((pc, remoteSocketId) => {
-        this.attachStreamToPeerConnection(pc, stream);
-        console.log(`[VIDEO] Attached media tracks to existing peer ${remoteSocketId}`);
-      });
-
       return stream;
     } catch (err: unknown) {
       console.error('[VIDEO] getUserMedia failed:', err);
@@ -323,8 +317,8 @@ export class WebRTCManager {
       };
     }
 
-    // Attach local media tracks if active call is in progress
-    if (this.localStream) {
+    // Attach local media tracks if initiator creating a media connection
+    if (this.localStream && isInitiator) {
       this.attachStreamToPeerConnection(pc, this.localStream);
     }
 
@@ -477,7 +471,9 @@ export class WebRTCManager {
 
     console.log(`[VIDEO] VIDEO_OFFER_SENT Creating offer for peer ${remoteSocketId} [type: ${callType}]`);
     const offer = await pc.createOffer(
-      callType === 'data' ? { offerToReceiveAudio: false, offerToReceiveVideo: false } : undefined
+      callType === 'data'
+        ? { offerToReceiveAudio: false, offerToReceiveVideo: false }
+        : { offerToReceiveAudio: true, offerToReceiveVideo: callType === 'video' }
     );
     await pc.setLocalDescription(offer);
     return offer;
