@@ -24,6 +24,64 @@ import CallRoundedIcon from '@mui/icons-material/CallRounded';
 import { useChatStore } from '../../store/useChatStore.js';
 import type { CallType } from '../../types/index.js';
 
+/**
+ * Dedicated Persistent Audio Stream Player for WebRTC remote audio
+ */
+export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ stream }) => {
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !stream) return;
+
+    if (audio.srcObject !== stream) {
+      audio.srcObject = stream;
+    }
+
+    const tryPlay = () => {
+      audio.play().catch((err) => {
+        console.warn('[AUDIO] Remote audio autoplay error:', err);
+      });
+    };
+
+    tryPlay();
+
+    audio.onloadedmetadata = tryPlay;
+    audio.oncanplay = tryPlay;
+
+    const audioTracks = stream.getAudioTracks();
+    audioTracks.forEach((track) => {
+      track.addEventListener('unmute', tryPlay);
+    });
+
+    return () => {
+      audioTracks.forEach((track) => {
+        track.removeEventListener('unmute', tryPlay);
+      });
+    };
+  }, [stream]);
+
+  return <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />;
+};
+
+/**
+ * Component rendering audio tags for all active remote streams
+ */
+export const RemoteAudioStreams: React.FC = () => {
+  const remoteStreams = useChatStore((state) => state.remoteStreams);
+  const streamEntries = Object.entries(remoteStreams);
+
+  if (streamEntries.length === 0) return null;
+
+  return (
+    <>
+      {streamEntries.map(([socketId, stream]) => (
+        <RemoteAudioPlayer key={socketId} stream={stream} />
+      ))}
+    </>
+  );
+};
+
 interface RemoteVideoViewProps {
   stream: MediaStream | null;
   displayName: string;
@@ -40,7 +98,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
   callType,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [hasLiveVideoTrack, setHasLiveVideoTrack] = useState(false);
+  const [videoTrackCount, setVideoTrackCount] = useState(0);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -48,12 +106,16 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
     video.playsInline = true;
     video.autoplay = true;
+    video.muted = true; // Audio is played via RemoteAudioStreams to prevent echo and autoplay restrictions
 
     if (stream) {
       if (video.srcObject !== stream) {
+        console.log(`[VIDEO] RemoteVideoView attaching stream ${stream.id}`);
         video.srcObject = stream;
       }
-      video.play().catch(() => {});
+      video.play().catch((err) => {
+        console.warn('[VIDEO] Remote video play error:', err);
+      });
     } else {
       video.srcObject = null;
     }
@@ -61,28 +123,49 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
   useEffect(() => {
     if (!stream) {
-      setHasLiveVideoTrack(false);
+      setVideoTrackCount(0);
       return;
     }
 
-    const updateTrackState = () => {
+    const checkTrackState = () => {
       const vTracks = stream.getVideoTracks();
-      const live = vTracks.some((t) => t.readyState === 'live' && t.enabled);
-      setHasLiveVideoTrack(live);
+      const liveTracks = vTracks.filter((t) => t.readyState === 'live' && t.enabled);
+      setVideoTrackCount(liveTracks.length);
+
+      const video = videoRef.current;
+      if (video) {
+        if (video.srcObject !== stream) {
+          video.srcObject = stream;
+        }
+        video.play().catch(() => {});
+      }
     };
 
-    updateTrackState();
-    stream.addEventListener('addtrack', updateTrackState);
-    stream.addEventListener('removetrack', updateTrackState);
+    checkTrackState();
+
+    stream.addEventListener('addtrack', checkTrackState);
+    stream.addEventListener('removetrack', checkTrackState);
+
+    const vTracks = stream.getVideoTracks();
+    vTracks.forEach((t) => {
+      t.addEventListener('unmute', checkTrackState);
+      t.addEventListener('mute', checkTrackState);
+      t.addEventListener('ended', checkTrackState);
+    });
 
     return () => {
-      stream.removeEventListener('addtrack', updateTrackState);
-      stream.removeEventListener('removetrack', updateTrackState);
+      stream.removeEventListener('addtrack', checkTrackState);
+      stream.removeEventListener('removetrack', checkTrackState);
+      vTracks.forEach((t) => {
+        t.removeEventListener('unmute', checkTrackState);
+        t.removeEventListener('mute', checkTrackState);
+        t.removeEventListener('ended', checkTrackState);
+      });
     };
   }, [stream]);
 
-  const shouldRenderVideo =
-    callType === 'video' && !isCameraOff && Boolean(stream) && hasLiveVideoTrack;
+  const showVideo =
+    callType === 'video' && !isCameraOff && Boolean(stream) && videoTrackCount > 0;
 
   return (
     <Box
@@ -97,29 +180,42 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         overflow: 'hidden',
       }}
     >
-      {/* Remote Video Stream Element */}
+      {/* Remote Video Stream Element (Positioned absolute with opacity transition, NEVER display: none) */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
+        muted
+        onLoadedMetadata={() => {
+          videoRef.current?.play().catch(() => {});
+        }}
+        onCanPlay={() => {
+          videoRef.current?.play().catch(() => {});
+        }}
         style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          display: shouldRenderVideo ? 'block' : 'none',
+          opacity: showVideo ? 1 : 0,
+          transition: 'opacity 0.25s ease-in-out',
+          zIndex: 1,
         }}
       />
 
-      {/* Fallback Display if video is off or audio call */}
-      {!shouldRenderVideo && (
+      {/* Fallback Display if video is off or loading */}
+      {!showVideo && (
         <Box
           sx={{
+            position: 'relative',
+            zIndex: 2,
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             gap: 2,
-            zIndex: 2,
           }}
         >
           <Box
@@ -273,16 +369,21 @@ const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
         playsInline
         muted
         style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
           width: '100%',
           height: '100%',
           objectFit: 'cover',
           transform: 'scaleX(-1)', // Mirrored selfie preview
-          display: showVideo ? 'block' : 'none',
+          opacity: showVideo ? 1 : 0,
+          transition: 'opacity 0.2s ease-in-out',
+          zIndex: 1,
         }}
       />
 
       {!showVideo && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
           <Avatar
             sx={{
               width: 44,
@@ -311,7 +412,7 @@ const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
           borderRadius: 1,
           backgroundColor: 'rgba(0, 0, 0, 0.7)',
           backdropFilter: 'blur(4px)',
-          zIndex: 2,
+          zIndex: 3,
         }}
       >
         <Typography variant="caption" sx={{ color: '#ffffff', fontSize: '0.65rem', fontWeight: 600 }}>

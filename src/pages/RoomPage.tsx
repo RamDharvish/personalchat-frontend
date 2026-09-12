@@ -50,7 +50,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/useChatStore.js';
 import { Header } from '../components/Layout/Header.js';
-import { CallOverlay, FloatingCallBar } from '../components/Call/CallOverlay.js';
+import { CallOverlay, FloatingCallBar, RemoteAudioStreams } from '../components/Call/CallOverlay.js';
 import { IncomingCallDialog } from '../components/Call/IncomingCallDialog.js';
 import { FileCard } from '../components/Chat/FileCard.js';
 import { DownloadApprovalDialog } from '../components/Chat/DownloadApprovalDialog.js';
@@ -110,6 +110,7 @@ export const RoomPage: React.FC = () => {
   const [activeMenuMessage, setActiveMenuMessage] = useState<ChatMessage | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollContainerRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -127,9 +128,18 @@ export const RoomPage: React.FC = () => {
     }
   }, [selfSocketId, roomCode, navigate]);
 
-  // Auto-scroll to bottom on new messages or typing state changes
+  // Isolate auto-scroll strictly to the chat timeline container without moving page header
+  const scrollToBottom = (smooth = true) => {
+    if (chatScrollContainerRef.current) {
+      chatScrollContainerRef.current.scrollTo({
+        top: chatScrollContainerRef.current.scrollHeight,
+        behavior: smooth ? 'smooth' : 'auto',
+      });
+    }
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom(true);
   }, [messages, fileTransfers, typingUsers, callStatus]);
 
   const activeCode = roomCode || routeRoomCode || '----';
@@ -511,6 +521,8 @@ export const RoomPage: React.FC = () => {
   return (
     <Box
       sx={{
+        position: 'fixed',
+        inset: 0,
         height: '100dvh',
         maxHeight: '100dvh',
         display: 'flex',
@@ -566,6 +578,9 @@ export const RoomPage: React.FC = () => {
             /* COMPACT MOBILE HEADER (WhatsApp-like) */
             <Box
               sx={{
+                position: 'sticky',
+                top: 0,
+                zIndex: 20,
                 height: 56,
                 minHeight: 56,
                 maxHeight: 56,
@@ -576,7 +591,6 @@ export const RoomPage: React.FC = () => {
                 backgroundColor: 'rgba(15, 23, 42, 0.98)',
                 borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
                 flexShrink: 0,
-                zIndex: 10,
               }}
             >
               {/* Left: Avatar & Room Info */}
@@ -696,6 +710,9 @@ export const RoomPage: React.FC = () => {
             /* DESKTOP ROOM TOP BAR */
             <Box
               sx={{
+                position: 'sticky',
+                top: 0,
+                zIndex: 20,
                 p: 2,
                 display: 'flex',
                 alignItems: 'center',
@@ -907,6 +924,7 @@ export const RoomPage: React.FC = () => {
             >
               {/* Message Timeline List */}
               <Box
+                ref={chatScrollContainerRef}
                 sx={{
                   flex: 1,
                   minHeight: 0,
@@ -1383,6 +1401,9 @@ export const RoomPage: React.FC = () => {
           </Box>
         </Card>
       </Box>
+
+      {/* Persistent Audio Stream Renderer for all active remote WebRTC audio */}
+      <RemoteAudioStreams />
 
       {/* ======================================================
           STANDALONE IN-ROOM CALL OVERLAY (AUDIO & VIDEO)

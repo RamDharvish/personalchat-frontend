@@ -138,40 +138,44 @@ export class WebRTCManager {
     const transceivers = pc.getTransceivers ? pc.getTransceivers() : [];
 
     stream.getTracks().forEach((track) => {
-      // 1. Existing sender with matching track or track kind
-      const existingSender = currentSenders.find(
-        (s) => s.track === track || (s.track && s.track.kind === track.kind)
-      );
-      if (existingSender) {
-        if (existingSender.track !== track) {
-          existingSender.replaceTrack(track).catch((err) => {
-            console.warn('[WebRTC] replaceTrack error:', err);
-          });
-        }
+      // 1. Exact track sender match
+      const exactSender = currentSenders.find((s) => s.track === track);
+      if (exactSender) {
         return;
       }
 
-      // 2. Existing transceiver with matching receiver track kind or sender without track
-      const existingTransceiver = transceivers.find(
-        (t) =>
-          (t.receiver && t.receiver.track && t.receiver.track.kind === track.kind) ||
-          (t.sender && !t.sender.track)
+      // 2. Existing sender with same track kind
+      const existingSender = currentSenders.find(
+        (s) => s.track && s.track.kind === track.kind
       );
-      if (existingTransceiver && existingTransceiver.sender) {
-        if (existingTransceiver.direction === 'recvonly') {
-          existingTransceiver.direction = 'sendrecv';
-        }
-        existingTransceiver.sender.replaceTrack(track).catch((err) => {
-          console.warn('[WebRTC] transceiver replaceTrack error:', err);
+      if (existingSender) {
+        existingSender.replaceTrack(track).catch((err) => {
+          console.warn(`[WebRTC] replaceTrack error for ${track.kind}:`, err);
         });
         return;
       }
 
-      // 3. Fallback to addTrack
+      // 3. Existing transceiver with matching track kind
+      const matchingTransceiver = transceivers.find(
+        (t) =>
+          (t.receiver && t.receiver.track && t.receiver.track.kind === track.kind) ||
+          (t.sender && t.sender.track && t.sender.track.kind === track.kind)
+      );
+      if (matchingTransceiver && matchingTransceiver.sender) {
+        if (matchingTransceiver.direction === 'recvonly') {
+          matchingTransceiver.direction = 'sendrecv';
+        }
+        matchingTransceiver.sender.replaceTrack(track).catch((err) => {
+          console.warn(`[WebRTC] transceiver replaceTrack error for ${track.kind}:`, err);
+        });
+        return;
+      }
+
+      // 4. Fallback to addTrack
       try {
         pc.addTrack(track, stream);
       } catch (err) {
-        console.warn('[WebRTC] addTrack error:', err);
+        console.warn(`[WebRTC] addTrack error for ${track.kind}:`, err);
       }
     });
   }
@@ -344,9 +348,15 @@ export class WebRTCManager {
           existingStream = new MediaStream();
           this.remoteStreams.set(remoteSocketId, existingStream);
         }
-        existingStream.addTrack(event.track);
+        if (!existingStream.getTracks().some((t) => t.id === event.track.id)) {
+          existingStream.addTrack(event.track);
+        }
         stream = existingStream;
       } else {
+        // Ensure stream is recorded in remoteStreams map
+        if (!stream.getTracks().some((t) => t.id === event.track.id)) {
+          stream.addTrack(event.track);
+        }
         this.remoteStreams.set(remoteSocketId, stream);
       }
 
@@ -354,9 +364,28 @@ export class WebRTCManager {
         `[VIDEO] Remote stream assigned for ${remoteSocketId}: streamId=${stream.id}, tracks=${stream.getTracks().length}`
       );
 
-      if (this.onRemoteStream) {
-        this.onRemoteStream(remoteSocketId, stream);
-      }
+      const notifyUpdate = () => {
+        if (this.onRemoteStream && stream) {
+          this.onRemoteStream(remoteSocketId, stream);
+        }
+      };
+
+      // Notify immediately
+      notifyUpdate();
+
+      // Ensure that when packets start flowing and track un-mutes, listeners receive the event
+      event.track.onunmute = () => {
+        console.log(`[VIDEO] Remote track unmuted from ${remoteSocketId}: kind=${event.track.kind}`);
+        notifyUpdate();
+      };
+      event.track.onmute = () => {
+        console.log(`[VIDEO] Remote track muted from ${remoteSocketId}: kind=${event.track.kind}`);
+        notifyUpdate();
+      };
+      event.track.onended = () => {
+        console.log(`[VIDEO] Remote track ended from ${remoteSocketId}: kind=${event.track.kind}`);
+        notifyUpdate();
+      };
     };
 
     // Connection state changes
