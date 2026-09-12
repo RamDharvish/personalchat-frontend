@@ -541,6 +541,12 @@ export class WebRTCManager {
     }
   }
 
+  private facingMode: 'user' | 'environment' = 'user';
+
+  public getFacingMode(): 'user' | 'environment' {
+    return this.facingMode;
+  }
+
   /**
    * Toggle local microphone mute.
    */
@@ -562,6 +568,57 @@ export class WebRTCManager {
         track.enabled = !isCameraOff;
         console.log(`[VIDEO] Video track enabled set to: ${track.enabled}`);
       });
+    }
+  }
+
+  /**
+   * Switch between front and rear cameras.
+   */
+  public async switchCamera(targetMode?: 'user' | 'environment'): Promise<'user' | 'environment'> {
+    if (!this.localStream) {
+      throw new Error('No active local stream to switch camera');
+    }
+
+    const nextMode = targetMode || (this.facingMode === 'user' ? 'environment' : 'user');
+
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) {
+        throw new Error('No video track found on switched camera device');
+      }
+
+      // Stop old video tracks
+      const oldVideoTracks = this.localStream.getVideoTracks();
+      oldVideoTracks.forEach((vt) => vt.stop());
+
+      // Replace track on local stream
+      oldVideoTracks.forEach((vt) => this.localStream?.removeTrack(vt));
+      this.localStream.addTrack(newVideoTrack);
+
+      // Replace video track on all peer connection senders
+      this.peerConnections.forEach((pc) => {
+        pc.getSenders().forEach((sender) => {
+          if (sender.track && sender.track.kind === 'video') {
+            sender.replaceTrack(newVideoTrack).catch((err) => {
+              console.warn('[WebRTC] switchCamera replaceTrack error:', err);
+            });
+          }
+        });
+      });
+
+      this.facingMode = nextMode;
+      return nextMode;
+    } catch (err: unknown) {
+      console.warn('[WebRTC] switchCamera failed:', err);
+      throw err;
     }
   }
 

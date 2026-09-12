@@ -20,7 +20,6 @@ import {
   Snackbar,
   useMediaQuery,
   useTheme,
-  Drawer,
   CircularProgress,
   Menu,
   MenuItem,
@@ -47,11 +46,11 @@ import WifiOffRoundedIcon from '@mui/icons-material/WifiOffRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/useChatStore.js';
 import { Header } from '../components/Layout/Header.js';
-import { VideoGrid } from '../components/Call/VideoGrid.js';
-import { CallControls } from '../components/Call/CallControls.js';
+import { CallOverlay, FloatingCallBar } from '../components/Call/CallOverlay.js';
 import { IncomingCallDialog } from '../components/Call/IncomingCallDialog.js';
 import { FileCard } from '../components/Chat/FileCard.js';
 import { DownloadApprovalDialog } from '../components/Chat/DownloadApprovalDialog.js';
@@ -79,7 +78,6 @@ export const RoomPage: React.FC = () => {
 
   // WebRTC Call State
   const callStatus = useChatStore((state) => state.callStatus);
-  const callType = useChatStore((state) => state.callType);
   const startCall = useChatStore((state) => state.startCall);
 
   const leaveRoom = useChatStore((state) => state.leaveRoom);
@@ -93,8 +91,12 @@ export const RoomPage: React.FC = () => {
 
   const [messageInput, setMessageInput] = useState('');
   const [copied, setCopied] = useState(false);
-  const [mobileMembersOpen, setMobileMembersOpen] = useState(false);
+  const [roomInfoOpen, setRoomInfoOpen] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [actionSnackbar, setActionSnackbar] = useState<string | null>(null);
+
+  // Mobile Top Menu State
+  const [roomMenuAnchorEl, setRoomMenuAnchorEl] = useState<null | HTMLElement>(null);
 
   // Voice Note Recording State
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -197,6 +199,7 @@ export const RoomPage: React.FC = () => {
   };
 
   const handleLeaveRoom = async () => {
+    setLeaveConfirmOpen(false);
     await leaveRoom();
     navigate('/');
   };
@@ -306,7 +309,6 @@ export const RoomPage: React.FC = () => {
           setRecordingDuration(durationSec);
         },
         async () => {
-          // Auto-stopped at max duration (5 min)
           setActionSnackbar('Maximum recording duration reached (5 min). Sending voice message...');
           await handleStopAndSendVoice();
         }
@@ -357,7 +359,7 @@ export const RoomPage: React.FC = () => {
   const typingNames = Object.values(typingUsers);
   const isCallActive = callStatus === 'calling' || callStatus === 'connected';
 
-  // Render members sidebar content
+  // Render members sidebar content for desktop
   const membersContent = (
     <Box sx={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Box sx={{ p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -381,7 +383,6 @@ export const RoomPage: React.FC = () => {
       <Divider sx={{ borderColor: 'rgba(255, 255, 255, 0.08)' }} />
 
       <List sx={{ flex: 1, p: 1.5, overflowY: 'auto' }}>
-        {/* Connected Members */}
         {members.map((member) => {
           const isSelf = member.socketId === selfSocketId;
           return (
@@ -453,7 +454,6 @@ export const RoomPage: React.FC = () => {
           );
         })}
 
-        {/* Empty slots placeholders */}
         {Array.from({ length: Math.max(0, roomCapacity - members.length) }).map((_, index) => (
           <ListItem
             key={`empty-${index}`}
@@ -494,7 +494,6 @@ export const RoomPage: React.FC = () => {
         ))}
       </List>
 
-      {/* Privacy note */}
       <Box sx={{ p: 2, borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#34d399' }}>
           <ShieldRoundedIcon sx={{ fontSize: 16 }} />
@@ -510,10 +509,30 @@ export const RoomPage: React.FC = () => {
   );
 
   return (
-    <Box sx={{ height: '100dvh', maxHeight: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <Header />
+    <Box
+      sx={{
+        height: '100dvh',
+        maxHeight: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        backgroundColor: '#0b0f19',
+      }}
+    >
+      {/* Desktop Header Only */}
+      {!isMobile && <Header />}
 
-      <Box sx={{ flex: 1, minHeight: 0, p: { xs: 1, sm: 2 }, display: 'flex', justifyContent: 'center', overflow: 'hidden' }}>
+      {/* Main Container */}
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          p: { xs: 0, md: 2 },
+          display: 'flex',
+          justifyContent: 'center',
+          overflow: 'hidden',
+        }}
+      >
         <Card
           sx={{
             width: '100%',
@@ -524,9 +543,12 @@ export const RoomPage: React.FC = () => {
             flexDirection: 'column',
             minHeight: 0,
             overflow: 'hidden',
+            borderRadius: { xs: 0, md: 3 },
+            border: { xs: 'none', md: '1px solid rgba(255, 255, 255, 0.08)' },
+            backgroundColor: '#0f172a',
           }}
         >
-          {/* Connection Error / Lost Banner */}
+          {/* Connection Error Banner */}
           {connectionStatus === 'disconnected' && (
             <Alert
               severity="warning"
@@ -537,244 +559,322 @@ export const RoomPage: React.FC = () => {
             </Alert>
           )}
 
-          {/* Room Top Bar */}
-          <Box
-            sx={{
-              p: { xs: 1.5, sm: 2 },
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-              backgroundColor: 'rgba(17, 23, 38, 0.95)',
-              flexShrink: 0,
-              flexWrap: 'wrap',
-              gap: 1.5,
-            }}
-          >
-            {/* Room Code & Lock Status */}
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <Box>
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1 }}>
-                  ROOM CODE
-                </Typography>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.2 }}>
-                  <Typography
-                    variant="h6"
+          {/* ======================================================
+              TOP APP BAR: COMPACT MOBILE & FULL DESKTOP
+             ====================================================== */}
+          {isMobile ? (
+            /* COMPACT MOBILE HEADER (WhatsApp-like) */
+            <Box
+              sx={{
+                height: 56,
+                minHeight: 56,
+                maxHeight: 56,
+                px: 1.5,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: 'rgba(15, 23, 42, 0.98)',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                flexShrink: 0,
+                zIndex: 10,
+              }}
+            >
+              {/* Left: Avatar & Room Info */}
+              <Box
+                onClick={() => setRoomInfoOpen(true)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.2,
+                  cursor: 'pointer',
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                <Badge
+                  overlap="circular"
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                  variant="dot"
+                  sx={{
+                    '& .MuiBadge-badge': {
+                      backgroundColor: isLocked ? '#f87171' : '#10b981',
+                      boxShadow: '0 0 0 2px #0f172a',
+                    },
+                  }}
+                >
+                  <Avatar
                     sx={{
-                      fontFamily: '"JetBrains Mono", monospace',
-                      fontWeight: 800,
-                      letterSpacing: '0.15em',
-                      color: '#a5b4fc',
+                      width: 38,
+                      height: 38,
+                      bgcolor: '#6366f1',
+                      fontWeight: 700,
+                      fontSize: '0.95rem',
                     }}
                   >
-                    #{activeCode}
+                    #
+                  </Avatar>
+                </Badge>
+
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography
+                    variant="subtitle2"
+                    fontWeight={800}
+                    noWrap
+                    sx={{
+                      color: '#f8fafc',
+                      fontSize: '0.95rem',
+                      fontFamily: '"JetBrains Mono", monospace',
+                      letterSpacing: '0.05em',
+                    }}
+                  >
+                    Room #{activeCode}
                   </Typography>
-                  <Tooltip title={copied ? 'Copied!' : 'Copy Room Code'}>
-                    <IconButton
-                      id="copy-room-code-btn"
-                      size="small"
-                      onClick={handleCopyCode}
-                      sx={{
-                        color: copied ? '#10b981' : 'text.secondary',
-                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
-                        '&:hover': { backgroundColor: 'rgba(99, 102, 241, 0.15)' },
-                      }}
-                    >
-                      {copied ? <CheckRoundedIcon fontSize="small" /> : <ContentCopyRoundedIcon fontSize="small" />}
-                    </IconButton>
-                  </Tooltip>
-                </Stack>
+                  <Typography
+                    variant="caption"
+                    noWrap
+                    sx={{
+                      color: typingNames.length > 0 ? '#38bdf8' : '#94a3b8',
+                      fontSize: '0.72rem',
+                      display: 'block',
+                      fontStyle: typingNames.length > 0 ? 'italic' : 'normal',
+                    }}
+                  >
+                    {typingNames.length > 0
+                      ? `${typingNames[0]} typing...`
+                      : `${members.length} online • Tap for info`}
+                  </Typography>
+                </Box>
               </Box>
 
-              {/* Lock Badge / Toggle */}
-              {isHost ? (
-                <Tooltip title={isLocked ? 'Click to Unlock Room' : 'Click to Lock Room'}>
+              {/* Right: Compact Action Buttons */}
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                {!isCallActive && (
+                  <>
+                    <Tooltip title="Voice Call">
+                      <IconButton
+                        id="mobile-voice-call-btn"
+                        size="medium"
+                        onClick={() => handleStartCall('voice')}
+                        sx={{
+                          color: '#a5b4fc',
+                          p: 1,
+                          '&:hover': { backgroundColor: 'rgba(99, 102, 241, 0.15)' },
+                        }}
+                      >
+                        <CallRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+
+                    <Tooltip title="Video Call">
+                      <IconButton
+                        id="mobile-video-call-btn"
+                        size="medium"
+                        onClick={() => handleStartCall('video')}
+                        sx={{
+                          color: '#22d3ee',
+                          p: 1,
+                          '&:hover': { backgroundColor: 'rgba(6, 182, 212, 0.15)' },
+                        }}
+                      >
+                        <VideocamRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </>
+                )}
+
+                <IconButton
+                  id="mobile-room-menu-btn"
+                  size="medium"
+                  onClick={(e) => setRoomMenuAnchorEl(e.currentTarget)}
+                  sx={{ color: '#cbd5e1', p: 1 }}
+                >
+                  <MoreVertRoundedIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+            </Box>
+          ) : (
+            /* DESKTOP ROOM TOP BAR */
+            <Box
+              sx={{
+                p: 2,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+                backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                flexShrink: 0,
+                gap: 1.5,
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1 }}>
+                    ROOM CODE
+                  </Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.2 }}>
+                    <Typography
+                      variant="h6"
+                      sx={{
+                        fontFamily: '"JetBrains Mono", monospace',
+                        fontWeight: 800,
+                        letterSpacing: '0.15em',
+                        color: '#a5b4fc',
+                      }}
+                    >
+                      #{activeCode}
+                    </Typography>
+                    <Tooltip title={copied ? 'Copied!' : 'Copy Room Code'}>
+                      <IconButton
+                        id="copy-room-code-btn"
+                        size="small"
+                        onClick={handleCopyCode}
+                        sx={{
+                          color: copied ? '#10b981' : 'text.secondary',
+                          backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                          '&:hover': { backgroundColor: 'rgba(99, 102, 241, 0.15)' },
+                        }}
+                      >
+                        {copied ? <CheckRoundedIcon fontSize="small" /> : <ContentCopyRoundedIcon fontSize="small" />}
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
+                </Box>
+
+                {isHost ? (
+                  <Tooltip title={isLocked ? 'Click to Unlock Room' : 'Click to Lock Room'}>
+                    <Chip
+                      id="host-lock-toggle-btn"
+                      icon={isLocked ? <LockOutlinedIcon /> : <LockOpenRoundedIcon />}
+                      label={isLocked ? 'Locked' : 'Open'}
+                      size="small"
+                      onClick={handleToggleLock}
+                      clickable
+                      sx={{
+                        backgroundColor: isLocked ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                        color: isLocked ? '#f87171' : '#34d399',
+                        borderColor: isLocked ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)',
+                        fontWeight: 600,
+                      }}
+                    />
+                  </Tooltip>
+                ) : (
                   <Chip
-                    id="host-lock-toggle-btn"
                     icon={isLocked ? <LockOutlinedIcon /> : <LockOpenRoundedIcon />}
                     label={isLocked ? 'Locked' : 'Open'}
                     size="small"
-                    onClick={handleToggleLock}
-                    clickable
                     sx={{
                       backgroundColor: isLocked ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
                       color: isLocked ? '#f87171' : '#34d399',
-                      borderColor: isLocked ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)',
                       fontWeight: 600,
                     }}
                   />
-                </Tooltip>
-              ) : (
-                <Chip
-                  icon={isLocked ? <LockOutlinedIcon /> : <LockOpenRoundedIcon />}
-                  label={isLocked ? 'Locked' : 'Open'}
-                  size="small"
-                  sx={{
-                    backgroundColor: isLocked ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                    color: isLocked ? '#f87171' : '#34d399',
-                    fontWeight: 600,
-                  }}
-                />
-              )}
+                )}
 
-              {/* P2P Mesh Connection Status */}
-              {members.length > 1 && (
-                <Tooltip
-                  title={
-                    p2pStatus === 'connected'
-                      ? 'P2P DataChannel mesh is active (Direct peer-to-peer file transfer ready)'
-                      : 'Establishing direct P2P mesh connection...'
-                  }
-                >
-                  <Chip
-                    id="p2p-status-chip"
-                    icon={
-                      p2pStatus === 'connected' ? (
-                        <span
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            backgroundColor: '#10b981',
-                            display: 'inline-block',
-                            marginLeft: 8,
-                          }}
-                        />
-                      ) : (
-                        <CircularProgress size={10} color="inherit" sx={{ ml: 1 }} />
-                      )
-                    }
-                    label={p2pStatus === 'connected' ? 'P2P Ready' : 'Connecting P2P...'}
-                    size="small"
-                    sx={{
-                      backgroundColor:
-                        p2pStatus === 'connected' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
-                      color: p2pStatus === 'connected' ? '#34d399' : '#fbbf24',
-                      borderColor:
-                        p2pStatus === 'connected' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)',
-                      fontWeight: 600,
-                    }}
-                  />
-                </Tooltip>
-              )}
+                {members.length > 1 && (
+                  <Tooltip title="P2P DataChannel mesh is active for peer-to-peer file transfer">
+                    <Chip
+                      id="p2p-status-chip"
+                      icon={
+                        p2pStatus === 'connected' ? (
+                          <span
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              backgroundColor: '#10b981',
+                              display: 'inline-block',
+                              marginLeft: 8,
+                            }}
+                          />
+                        ) : (
+                          <CircularProgress size={10} color="inherit" sx={{ ml: 1 }} />
+                        )
+                      }
+                      label={p2pStatus === 'connected' ? 'P2P Ready' : 'Connecting P2P...'}
+                      size="small"
+                      sx={{
+                        backgroundColor:
+                          p2pStatus === 'connected' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+                        color: p2pStatus === 'connected' ? '#34d399' : '#fbbf24',
+                        fontWeight: 600,
+                      }}
+                    />
+                  </Tooltip>
+                )}
+              </Stack>
 
-              {/* Active Call Status Pill */}
-              {isCallActive && (
-                <Chip
-                  icon={
-                    callStatus === 'calling' ? (
-                      <CircularProgress size={12} color="inherit" />
-                    ) : callType === 'video' ? (
-                      <VideocamRoundedIcon sx={{ fontSize: 14 }} />
-                    ) : (
-                      <CallRoundedIcon sx={{ fontSize: 14 }} />
-                    )
-                  }
-                  label={
-                    callStatus === 'calling'
-                      ? 'Calling peers...'
-                      : `In ${callType === 'video' ? 'Video' : 'Voice'} Call`
-                  }
-                  size="small"
-                  sx={{
-                    backgroundColor: 'rgba(99, 102, 241, 0.25)',
-                    color: '#a5b4fc',
-                    borderColor: '#6366f1',
-                    fontWeight: 700,
-                    animation: callStatus === 'calling' ? 'pulse 1.5s infinite' : 'none',
-                  }}
-                />
-              )}
+              {/* Desktop Actions */}
+              <Stack direction="row" spacing={1} alignItems="center">
+                {!isCallActive && (
+                  <>
+                    <Tooltip title="Start Voice Call">
+                      <Button
+                        id="voice-call-start-btn"
+                        variant="outlined"
+                        size="small"
+                        startIcon={<CallRoundedIcon />}
+                        onClick={() => handleStartCall('voice')}
+                        sx={{
+                          borderColor: 'rgba(99, 102, 241, 0.4)',
+                          color: '#a5b4fc',
+                          backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                          '&:hover': { backgroundColor: 'rgba(99, 102, 241, 0.2)' },
+                        }}
+                      >
+                        Voice Call
+                      </Button>
+                    </Tooltip>
 
-              {isMobile && (
+                    <Tooltip title="Start Video Call">
+                      <Button
+                        id="video-call-start-btn"
+                        variant="outlined"
+                        size="small"
+                        startIcon={<VideocamRoundedIcon />}
+                        onClick={() => handleStartCall('video')}
+                        sx={{
+                          borderColor: 'rgba(6, 182, 212, 0.4)',
+                          color: '#22d3ee',
+                          backgroundColor: 'rgba(6, 182, 212, 0.08)',
+                          '&:hover': { backgroundColor: 'rgba(6, 182, 212, 0.2)' },
+                        }}
+                      >
+                        Video Call
+                      </Button>
+                    </Tooltip>
+                  </>
+                )}
+
+                <Divider orientation="vertical" flexItem sx={{ mx: 0.5, borderColor: 'rgba(255, 255, 255, 0.1)' }} />
+
                 <Button
-                  id="mobile-members-toggle-btn"
+                  id="leave-room-btn"
                   variant="outlined"
+                  color="error"
                   size="small"
-                  startIcon={<PeopleOutlineRoundedIcon />}
-                  onClick={() => setMobileMembersOpen(true)}
-                  sx={{ borderColor: 'rgba(255, 255, 255, 0.15)', ml: 1 }}
+                  startIcon={<ExitToAppRoundedIcon />}
+                  onClick={() => setLeaveConfirmOpen(true)}
+                  sx={{
+                    borderColor: 'rgba(239, 68, 68, 0.4)',
+                    color: '#f87171',
+                    '&:hover': {
+                      backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                      borderColor: '#ef4444',
+                    },
+                  }}
                 >
-                  Members ({members.length}/{roomCapacity})
+                  Leave
                 </Button>
-              )}
-            </Stack>
-
-            {/* Room Actions */}
-            <Stack direction="row" spacing={1} alignItems="center">
-              {!isCallActive && (
-                <>
-                  <Tooltip title="Start Voice Call">
-                    <IconButton
-                      id="voice-call-start-btn"
-                      color="primary"
-                      onClick={() => handleStartCall('voice')}
-                      sx={{
-                        backgroundColor: 'rgba(99, 102, 241, 0.12)',
-                        '&:hover': { backgroundColor: 'rgba(99, 102, 241, 0.25)' },
-                      }}
-                    >
-                      <CallRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-
-                  <Tooltip title="Start Video Call">
-                    <IconButton
-                      id="video-call-start-btn"
-                      color="secondary"
-                      onClick={() => handleStartCall('video')}
-                      sx={{
-                        backgroundColor: 'rgba(6, 182, 212, 0.12)',
-                        '&:hover': { backgroundColor: 'rgba(6, 182, 212, 0.25)' },
-                      }}
-                    >
-                      <VideocamRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </>
-              )}
-
-              <Divider orientation="vertical" flexItem sx={{ mx: 0.5, borderColor: 'rgba(255, 255, 255, 0.1)' }} />
-
-              <Button
-                id="leave-room-btn"
-                variant="outlined"
-                color="error"
-                size="small"
-                startIcon={<ExitToAppRoundedIcon />}
-                onClick={handleLeaveRoom}
-                sx={{
-                  borderColor: 'rgba(239, 68, 68, 0.4)',
-                  color: '#f87171',
-                  '&:hover': {
-                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                    borderColor: '#ef4444',
-                  },
-                }}
-              >
-                Leave
-              </Button>
-            </Stack>
-          </Box>
-
-          {/* WebRTC Video Call Area (When Active) */}
-          {isCallActive && (
-            <Box
-              sx={{
-                flexShrink: 0,
-                maxHeight: { xs: '36vh', sm: '40vh', md: '44vh' },
-                display: 'flex',
-                flexDirection: 'column',
-                overflowY: 'auto',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-              }}
-            >
-              <VideoGrid />
-              <CallControls />
+              </Stack>
             </Box>
           )}
 
-          {/* Main Content: Split Sidebar + Chat Area */}
+          {/* Floating Minimized Call Bar (when in call and minimized) */}
+          <FloatingCallBar />
+
+          {/* ======================================================
+              MAIN BODY: SIDEBAR + CHAT WORKSPACE
+             ====================================================== */}
           <Box sx={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
             {/* Desktop Members Sidebar */}
             {!isMobile && (
@@ -782,7 +882,7 @@ export const RoomPage: React.FC = () => {
                 sx={{
                   width: { md: 250, lg: 270 },
                   borderRight: '1px solid rgba(255, 255, 255, 0.08)',
-                  backgroundColor: 'rgba(15, 21, 35, 0.6)',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
                   display: 'flex',
                   flexDirection: 'column',
                   minHeight: 0,
@@ -793,51 +893,24 @@ export const RoomPage: React.FC = () => {
               </Box>
             )}
 
-            {/* Mobile Drawer for Members */}
-            {isMobile && (
-              <Drawer
-                anchor="left"
-                open={mobileMembersOpen}
-                onClose={() => setMobileMembersOpen(false)}
-                PaperProps={{
-                  sx: {
-                    width: 280,
-                    backgroundColor: '#111726',
-                    backgroundImage: 'none',
-                  },
-                }}
-              >
-                {membersContent}
-              </Drawer>
-            )}
-
-            {/* Chat Workspace */}
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' }}>
-              {/* Ephemeral Privacy Notice */}
-              <Alert
-                icon={<LockOutlinedIcon fontSize="inherit" />}
-                severity="info"
-                sx={{
-                  backgroundColor: 'rgba(99, 102, 241, 0.08)',
-                  color: '#cbd5e1',
-                  borderRadius: 0,
-                  borderBottom: '1px solid rgba(99, 102, 241, 0.15)',
-                  py: 0.4,
-                  px: 1.5,
-                  flexShrink: 0,
-                  '& .MuiAlert-icon': { color: '#818cf8' },
-                  fontSize: '0.78rem',
-                }}
-              >
-                Ephemeral conversation. Messages, calls, and files stream directly between peers and are wiped on exit.
-              </Alert>
-
-              {/* Chat Message Timeline Area */}
+            {/* Chat Messages Timeline & Composer */}
+            <Box
+              sx={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                minHeight: 0,
+                overflow: 'hidden',
+                backgroundColor: '#0a0f1d',
+              }}
+            >
+              {/* Message Timeline List */}
               <Box
                 sx={{
                   flex: 1,
                   minHeight: 0,
-                  p: { xs: 1.2, sm: 2 },
+                  p: { xs: 1.5, sm: 2 },
                   overflowY: 'auto',
                   display: 'flex',
                   flexDirection: 'column',
@@ -857,7 +930,7 @@ export const RoomPage: React.FC = () => {
                   >
                     <Box
                       sx={{
-                        maxWidth: 420,
+                        maxWidth: 380,
                         p: 3,
                         borderRadius: 3,
                         backgroundColor: 'rgba(255, 255, 255, 0.02)',
@@ -868,7 +941,7 @@ export const RoomPage: React.FC = () => {
                         Room #{activeCode} is Ready
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Send a message, start a call, or attach files. No data is stored on server disk.
+                        Send messages, start audio/video calls, or share files. All content is ephemeral and direct P2P.
                       </Typography>
                     </Box>
                   </Box>
@@ -876,16 +949,16 @@ export const RoomPage: React.FC = () => {
                   messages.map((msg) => {
                     if (msg.type === 'system') {
                       return (
-                        <Box key={msg.id} sx={{ display: 'flex', justifyContent: 'center', my: 1 }}>
+                        <Box key={msg.id} sx={{ display: 'flex', justifyContent: 'center', my: 0.8 }}>
                           <Chip
                             label={msg.text}
                             size="small"
                             sx={{
                               backgroundColor: 'rgba(255, 255, 255, 0.06)',
                               color: '#94a3b8',
-                              fontSize: '0.75rem',
+                              fontSize: '0.72rem',
                               height: 'auto',
-                              py: 0.5,
+                              py: 0.4,
                               px: 1,
                               '& .MuiChip-label': { whiteSpace: 'normal' },
                             }}
@@ -897,7 +970,6 @@ export const RoomPage: React.FC = () => {
                     const isSelf = msg.senderId === selfSocketId;
                     const fileItem = msg.fileTransferId ? fileTransfers[msg.fileTransferId] : undefined;
 
-                    // If message is a file transfer card
                     if (fileItem) {
                       return (
                         <Box
@@ -925,7 +997,6 @@ export const RoomPage: React.FC = () => {
                       );
                     }
 
-                    // Standard text message bubble
                     const isEditing = editingMessageId === msg.id;
 
                     return (
@@ -1084,20 +1155,21 @@ export const RoomPage: React.FC = () => {
 
                             <Box
                               sx={{
-                                p: 1.5,
+                                p: 1.3,
+                                px: 1.6,
                                 borderRadius: 3,
                                 borderTopRightRadius: isSelf ? 0 : 12,
                                 borderTopLeftRadius: isSelf ? 12 : 0,
-                                backgroundColor: isSelf ? '#4f46e5' : 'rgba(30, 41, 59, 0.9)',
+                                backgroundColor: isSelf ? '#4f46e5' : 'rgba(30, 41, 59, 0.95)',
                                 color: '#ffffff',
                                 boxShadow: isSelf
                                   ? '0 4px 14px rgba(79, 70, 229, 0.3)'
-                                  : '0 4px 14px rgba(0, 0, 0, 0.2)',
+                                  : '0 4px 14px rgba(0, 0, 0, 0.25)',
                                 wordBreak: 'break-word',
                                 whiteSpace: 'pre-wrap',
                               }}
                             >
-                              <Typography variant="body2" sx={{ lineHeight: 1.5 }}>
+                              <Typography variant="body2" sx={{ lineHeight: 1.45, fontSize: '0.92rem' }}>
                                 {msg.text}
                               </Typography>
                             </Box>
@@ -1108,18 +1180,15 @@ export const RoomPage: React.FC = () => {
                   })
                 )}
 
-                {/* Typing Indicator Display */}
+                {/* Typing Indicator */}
                 {typingNames.length > 0 && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5, px: 1 }}>
                     <Typography
                       variant="caption"
                       sx={{
                         color: '#38bdf8',
                         fontStyle: 'italic',
                         fontSize: '0.75rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 0.5,
                       }}
                     >
                       {typingNames.join(', ')} {typingNames.length > 1 ? 'are' : 'is'} typing...
@@ -1130,7 +1199,7 @@ export const RoomPage: React.FC = () => {
                 <div ref={messagesEndRef} />
               </Box>
 
-              {/* Hidden File Input for P2P File Sharing */}
+              {/* Hidden File Picker */}
               <input
                 type="file"
                 ref={fileInputRef}
@@ -1138,34 +1207,37 @@ export const RoomPage: React.FC = () => {
                 onChange={handleFileSelect}
               />
 
-              {/* Message Input Bar or Voice Recording Interface */}
+              {/* ======================================================
+                  MESSAGE COMPOSER (WhatsApp-like)
+                 ====================================================== */}
               {isRecordingVoice ? (
                 <Box
                   sx={{
-                    p: { xs: 1.2, sm: 1.5 },
+                    p: { xs: 1, sm: 1.5 },
+                    pb: { xs: 'max(10px, env(safe-area-inset-bottom))', sm: 1.5 },
                     borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-                    backgroundColor: 'rgba(17, 23, 38, 0.98)',
+                    backgroundColor: 'rgba(15, 23, 42, 0.98)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     gap: 1.5,
-                    flexWrap: 'wrap',
                     flexShrink: 0,
                     zIndex: 10,
                   }}
                 >
-                  <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Stack direction="row" spacing={1.2} alignItems="center">
                     <Box
                       sx={{
-                        width: 12,
-                        height: 12,
+                        width: 10,
+                        height: 10,
                         borderRadius: '50%',
                         backgroundColor: '#ef4444',
-                        boxShadow: '0 0 10px #ef4444',
+                        boxShadow: '0 0 8px #ef4444',
+                        animation: 'pulse 1.5s infinite',
                       }}
                     />
-                    <Typography variant="body2" fontWeight={700} sx={{ color: '#f87171' }}>
-                      Recording Voice Note...
+                    <Typography variant="body2" fontWeight={700} sx={{ color: '#f87171', fontSize: '0.85rem' }}>
+                      Recording...
                     </Typography>
                     <Chip
                       label={`${formatRecordingTime(recordingDuration)} / 05:00`}
@@ -1175,24 +1247,20 @@ export const RoomPage: React.FC = () => {
                         color: '#fca5a5',
                         fontFamily: '"JetBrains Mono", monospace',
                         fontWeight: 700,
-                        fontSize: '0.8rem',
+                        fontSize: '0.75rem',
+                        height: 22,
                       }}
                     />
                   </Stack>
 
-                  <Stack direction="row" spacing={1.5}>
+                  <Stack direction="row" spacing={1}>
                     <Button
                       id="cancel-voice-record-btn"
-                      variant="outlined"
+                      variant="text"
                       color="inherit"
                       size="small"
-                      startIcon={<CloseRoundedIcon />}
                       onClick={handleCancelRecordingVoice}
-                      sx={{
-                        borderColor: 'rgba(255, 255, 255, 0.2)',
-                        color: '#cbd5e1',
-                        '&:hover': { borderColor: '#f87171', color: '#f87171' },
-                      }}
+                      sx={{ color: '#cbd5e1', fontSize: '0.8rem' }}
                     >
                       Cancel
                     </Button>
@@ -1206,10 +1274,12 @@ export const RoomPage: React.FC = () => {
                         backgroundColor: '#ef4444',
                         color: '#ffffff',
                         fontWeight: 700,
+                        fontSize: '0.8rem',
+                        borderRadius: 2,
                         '&:hover': { backgroundColor: '#dc2626' },
                       }}
                     >
-                      Send Voice Note
+                      Send
                     </Button>
                   </Stack>
                 </Box>
@@ -1221,9 +1291,10 @@ export const RoomPage: React.FC = () => {
                     handleSendMessage();
                   }}
                   sx={{
-                    p: { xs: 1.2, sm: 1.5 },
+                    p: { xs: 1, sm: 1.5 },
+                    pb: { xs: 'max(10px, env(safe-area-inset-bottom))', sm: 1.5 },
                     borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-                    backgroundColor: 'rgba(17, 23, 38, 0.98)',
+                    backgroundColor: 'rgba(15, 23, 42, 0.98)',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 1,
@@ -1231,71 +1302,81 @@ export const RoomPage: React.FC = () => {
                     zIndex: 10,
                   }}
                 >
-                  <Tooltip title="Direct P2P File Transfer (Max 100 MB)">
+                  {/* Attachment Button */}
+                  <Tooltip title="Attach File (Max 100 MB)">
                     <IconButton
                       id="attachment-btn"
                       onClick={handleFileButtonClick}
                       sx={{
-                        color: 'text.secondary',
-                        '&:hover': { color: '#6366f1', backgroundColor: 'rgba(99, 102, 241, 0.1)' },
+                        color: '#94a3b8',
+                        p: { xs: 0.8, sm: 1 },
+                        '&:hover': { color: '#6366f1', backgroundColor: 'rgba(99, 102, 241, 0.12)' },
                       }}
                     >
                       <AttachFileRoundedIcon />
                     </IconButton>
                   </Tooltip>
 
-                  <Tooltip title="Record P2P Voice Note (Max 5 min)">
-                    <IconButton
-                      id="voice-note-record-btn"
-                      onClick={handleStartRecordingVoice}
-                      sx={{
-                        color: 'text.secondary',
-                        '&:hover': { color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)' },
-                      }}
-                    >
-                      <MicRoundedIcon />
-                    </IconButton>
-                  </Tooltip>
-
+                  {/* Rounded Message Input Field */}
                   <TextField
                     id="chat-message-input"
                     fullWidth
                     multiline
                     maxRows={4}
                     size="small"
-                    placeholder="Type a message (Enter to send, Shift+Enter for newline)..."
+                    placeholder="Type a message..."
                     value={messageInput}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
                     sx={{
                       '& .MuiOutlinedInput-root': {
-                        borderRadius: 3,
-                        backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                        borderRadius: 4,
+                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                        fontSize: '0.92rem',
+                        py: 0.8,
+                        px: 1.5,
+                        '&:hover': {
+                          backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                        },
                       },
                     }}
                   />
 
-                  <Tooltip title="Send Message">
-                    <span>
+                  {/* Dynamic Action Button: Send or Voice Recording */}
+                  {messageInput.trim() ? (
+                    <Tooltip title="Send Message">
                       <IconButton
                         id="send-message-btn"
                         type="submit"
                         color="primary"
-                        disabled={!messageInput.trim()}
                         sx={{
-                          backgroundColor: messageInput.trim() ? '#6366f1' : 'rgba(255, 255, 255, 0.05)',
+                          backgroundColor: '#4f46e5',
                           color: '#ffffff',
-                          '&:hover': { backgroundColor: '#4f46e5' },
-                          '&.Mui-disabled': {
-                            backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                            color: 'rgba(255, 255, 255, 0.2)',
-                          },
+                          p: { xs: 1, sm: 1.2 },
+                          transition: 'all 0.2s',
+                          '&:hover': { backgroundColor: '#4338ca', transform: 'scale(1.05)' },
                         }}
                       >
                         <SendRoundedIcon fontSize="small" />
                       </IconButton>
-                    </span>
-                  </Tooltip>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip title="Hold or Tap to Record Voice Note">
+                      <IconButton
+                        id="voice-note-record-btn"
+                        onClick={handleStartRecordingVoice}
+                        sx={{
+                          backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                          color: '#f87171',
+                          p: { xs: 1, sm: 1.2 },
+                          transition: 'all 0.2s',
+                          '&:hover': { backgroundColor: 'rgba(239, 68, 68, 0.25)', transform: 'scale(1.05)' },
+                        }}
+                      >
+                        <MicRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
                 </Box>
               )}
             </Box>
@@ -1303,8 +1384,313 @@ export const RoomPage: React.FC = () => {
         </Card>
       </Box>
 
+      {/* ======================================================
+          STANDALONE IN-ROOM CALL OVERLAY (AUDIO & VIDEO)
+         ====================================================== */}
+      <CallOverlay />
+
       {/* Incoming Call Notification Dialog */}
       <IncomingCallDialog />
+
+      {/* Mobile Room Menu */}
+      <Menu
+        anchorEl={roomMenuAnchorEl}
+        open={Boolean(roomMenuAnchorEl)}
+        onClose={() => setRoomMenuAnchorEl(null)}
+        PaperProps={{
+          sx: {
+            backgroundColor: '#1e293b',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: 2,
+            minWidth: 170,
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.5)',
+          },
+        }}
+      >
+        <MenuItem
+          id="menu-room-info-item"
+          onClick={() => {
+            setRoomMenuAnchorEl(null);
+            setRoomInfoOpen(true);
+          }}
+          sx={{ gap: 1.2, fontSize: '0.85rem' }}
+        >
+          <InfoOutlinedIcon fontSize="small" sx={{ color: '#818cf8' }} />
+          Room Info & Members
+        </MenuItem>
+
+        <MenuItem
+          id="menu-copy-code-item"
+          onClick={() => {
+            setRoomMenuAnchorEl(null);
+            handleCopyCode();
+            setActionSnackbar(`Copied Room Code #${activeCode}`);
+          }}
+          sx={{ gap: 1.2, fontSize: '0.85rem' }}
+        >
+          <ContentCopyRoundedIcon fontSize="small" sx={{ color: '#34d399' }} />
+          Copy Room Code
+        </MenuItem>
+
+        {isHost && (
+          <MenuItem
+            id="menu-toggle-lock-item"
+            onClick={() => {
+              setRoomMenuAnchorEl(null);
+              handleToggleLock();
+            }}
+            sx={{ gap: 1.2, fontSize: '0.85rem' }}
+          >
+            {isLocked ? (
+              <LockOpenRoundedIcon fontSize="small" sx={{ color: '#34d399' }} />
+            ) : (
+              <LockOutlinedIcon fontSize="small" sx={{ color: '#f87171' }} />
+            )}
+            {isLocked ? 'Unlock Room' : 'Lock Room'}
+          </MenuItem>
+        )}
+
+        <Divider sx={{ my: 0.5, borderColor: 'rgba(255, 255, 255, 0.1)' }} />
+
+        <MenuItem
+          id="menu-leave-room-item"
+          onClick={() => {
+            setRoomMenuAnchorEl(null);
+            setLeaveConfirmOpen(true);
+          }}
+          sx={{ gap: 1.2, fontSize: '0.85rem', color: '#f87171' }}
+        >
+          <ExitToAppRoundedIcon fontSize="small" />
+          Leave Room
+        </MenuItem>
+      </Menu>
+
+      {/* Secondary Room Information Bottom Sheet / Dialog */}
+      <Dialog
+        open={roomInfoOpen}
+        onClose={() => setRoomInfoOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 4,
+            backgroundColor: '#0f172a',
+            backgroundImage: 'none',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+            p: 1,
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Typography variant="h6" fontWeight={700} sx={{ color: '#f8fafc' }}>
+            Room Details
+          </Typography>
+          <IconButton size="small" onClick={() => setRoomInfoOpen(false)} sx={{ color: '#94a3b8' }}>
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ p: 2, pt: 1 }}>
+          {/* Room Code Card */}
+          <Box
+            sx={{
+              p: 2,
+              borderRadius: 3,
+              backgroundColor: 'rgba(99, 102, 241, 0.08)',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              mb: 2,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box>
+              <Typography variant="caption" sx={{ color: '#a5b4fc', fontWeight: 600 }}>
+                ROOM CODE
+              </Typography>
+              <Typography
+                variant="h5"
+                sx={{
+                  fontFamily: '"JetBrains Mono", monospace',
+                  fontWeight: 800,
+                  color: '#ffffff',
+                  letterSpacing: '0.15em',
+                }}
+              >
+                #{activeCode}
+              </Typography>
+            </Box>
+            <Button
+              id="dialog-copy-code-btn"
+              variant="contained"
+              size="small"
+              startIcon={copied ? <CheckRoundedIcon /> : <ContentCopyRoundedIcon />}
+              onClick={handleCopyCode}
+              sx={{
+                backgroundColor: copied ? '#10b981' : '#6366f1',
+                borderRadius: 2,
+                fontWeight: 700,
+                fontSize: '0.75rem',
+                '&:hover': { backgroundColor: copied ? '#059669' : '#4f46e5' },
+              }}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+          </Box>
+
+          {/* Members List */}
+          <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#cbd5e1', mb: 1 }}>
+            Members ({members.length} / {roomCapacity})
+          </Typography>
+          <List sx={{ p: 0, mb: 2, maxHeight: 220, overflowY: 'auto' }}>
+            {members.map((m) => {
+              const isSelf = m.socketId === selfSocketId;
+              return (
+                <ListItem
+                  key={m.socketId}
+                  sx={{
+                    borderRadius: 2,
+                    backgroundColor: isSelf ? 'rgba(99, 102, 241, 0.12)' : 'rgba(255, 255, 255, 0.03)',
+                    border: `1px solid ${isSelf ? 'rgba(99, 102, 241, 0.3)' : 'rgba(255, 255, 255, 0.06)'}`,
+                    mb: 1,
+                    py: 0.8,
+                  }}
+                >
+                  <ListItemAvatar>
+                    <Avatar
+                      sx={{
+                        bgcolor: isSelf ? '#6366f1' : '#0891b2',
+                        width: 32,
+                        height: 32,
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {m.displayName.charAt(0).toUpperCase()}
+                    </Avatar>
+                  </ListItemAvatar>
+                  <ListItemText
+                    primary={
+                      <Typography variant="body2" fontWeight={700} sx={{ color: '#ffffff' }}>
+                        {m.displayName} {isSelf && '(You)'}
+                      </Typography>
+                    }
+                    secondary={
+                      <Chip
+                        label={m.isHost ? 'Host' : 'Member'}
+                        size="small"
+                        sx={{
+                          height: 16,
+                          fontSize: '0.62rem',
+                          fontWeight: 700,
+                          backgroundColor: m.isHost ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.06)',
+                          color: m.isHost ? '#a5b4fc' : '#94a3b8',
+                          mt: 0.2,
+                        }}
+                      />
+                    }
+                  />
+                </ListItem>
+              );
+            })}
+          </List>
+
+          {/* Privacy Note */}
+          <Box
+            sx={{
+              p: 1.5,
+              borderRadius: 2,
+              backgroundColor: 'rgba(16, 185, 129, 0.08)',
+              border: '1px solid rgba(16, 185, 129, 0.2)',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 1,
+            }}
+          >
+            <ShieldRoundedIcon sx={{ color: '#34d399', fontSize: 18, mt: 0.2 }} />
+            <Box>
+              <Typography variant="caption" fontWeight={700} sx={{ color: '#34d399', display: 'block' }}>
+                End-to-End P2P Privacy
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.7rem' }}>
+                All audio, video, messages, and files are temporary and stream directly between connected peers.
+              </Typography>
+            </Box>
+          </Box>
+        </DialogContent>
+
+        <DialogActions sx={{ p: 2, pt: 0, justifyContent: 'space-between' }}>
+          <Button
+            id="dialog-leave-room-btn"
+            variant="text"
+            color="error"
+            startIcon={<ExitToAppRoundedIcon />}
+            onClick={() => {
+              setRoomInfoOpen(false);
+              setLeaveConfirmOpen(true);
+            }}
+            sx={{ fontSize: '0.8rem' }}
+          >
+            Leave Room
+          </Button>
+
+          <Button
+            variant="outlined"
+            onClick={() => setRoomInfoOpen(false)}
+            sx={{ borderColor: 'rgba(255, 255, 255, 0.2)', color: '#cbd5e1', fontSize: '0.8rem' }}
+          >
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Leave Room Confirmation Dialog */}
+      <Dialog
+        open={leaveConfirmOpen}
+        onClose={() => setLeaveConfirmOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            backgroundColor: '#0f172a',
+            backgroundImage: 'none',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.6)',
+          },
+        }}
+      >
+        <DialogTitle sx={{ color: '#f8fafc', fontWeight: 700, pb: 1 }}>
+          Leave Room #{activeCode}?
+        </DialogTitle>
+        <DialogContent sx={{ pt: 1 }}>
+          <Typography variant="body2" sx={{ color: '#cbd5e1' }}>
+            Are you sure you want to leave? All ephemeral session data and active calls will end.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, pt: 1, gap: 1 }}>
+          <Button
+            id="cancel-leave-btn"
+            variant="outlined"
+            size="small"
+            onClick={() => setLeaveConfirmOpen(false)}
+            sx={{ borderColor: 'rgba(255, 255, 255, 0.2)', color: '#cbd5e1' }}
+          >
+            Stay in Room
+          </Button>
+          <Button
+            id="confirm-leave-btn"
+            variant="contained"
+            color="error"
+            size="small"
+            onClick={handleLeaveRoom}
+            sx={{ fontWeight: 700, backgroundColor: '#ef4444', '&:hover': { backgroundColor: '#dc2626' } }}
+          >
+            Leave Room
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Message Action Menu (Edit / Delete) */}
       <Menu
@@ -1314,7 +1700,6 @@ export const RoomPage: React.FC = () => {
         PaperProps={{
           sx: {
             backgroundColor: '#1e293b',
-            backgroundImage: 'none',
             border: '1px solid rgba(255, 255, 255, 0.1)',
             borderRadius: 2,
             minWidth: 130,

@@ -8,4 +8,6 @@
 
 export const BACKEND_URL: string =
   (import.meta.env.VITE_BACKEND_URL as string | undefined)?.replace(/\/+$/, '') ||
-  'https://personalchat-backend.onrender.com';
+  (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:5000'
+    : 'https://personalchat-backend.onrender.com');

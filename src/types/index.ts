@@ -133,6 +133,8 @@ export interface ChatSessionState {
   callerInfo: CallerInfo | null;
   isMuted: boolean;
   isCameraOff: boolean;
+  facingMode: 'user' | 'environment';
+  isCallMinimized: boolean;
   localStream: MediaStream | null;
   remoteStreams: { [socketId: string]: MediaStream };
   peerMediaStates: { [socketId: string]: PeerMediaState };
@@ -154,6 +156,8 @@ export interface ChatSessionState {
   endCall: () => void;
   toggleMute: () => void;
   toggleCamera: () => void;
+  switchCamera: () => Promise<void>;
+  setCallMinimized: (minimized: boolean) => void;
   
   // P2P File Transfer & Approval Actions
   sendFile: (file: File) => Promise<void>;

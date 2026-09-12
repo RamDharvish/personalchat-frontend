@@ -92,6 +92,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
     callerInfo: null,
     isMuted: false,
     isCameraOff: false,
+    facingMode: 'user',
+    isCallMinimized: false,
     localStream: null,
     remoteStreams: {},
     peerMediaStates: {},
@@ -333,6 +335,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           localStream: stream,
           isMuted: false,
           isCameraOff: false,
+          facingMode: 'user',
+          isCallMinimized: false,
         });
 
         emitCallStart(callType);
@@ -351,7 +355,13 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Could not start call';
         webrtcManager.stopLocalStream();
-        set({ errorMessage: msg, callStatus: 'idle', callType: null, localStream: null });
+        set({
+          errorMessage: msg,
+          callStatus: 'idle',
+          callType: null,
+          localStream: null,
+          isCallMinimized: false,
+        });
         throw err;
       }
     },
@@ -371,6 +381,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           callerInfo: null,
           isMuted: false,
           isCameraOff: false,
+          facingMode: 'user',
+          isCallMinimized: false,
         });
 
         const callerSocketId = caller?.socketId;
@@ -393,7 +405,13 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Could not accept call';
         webrtcManager.stopLocalStream();
-        set({ errorMessage: msg, callStatus: 'idle', callerInfo: null, localStream: null });
+        set({
+          errorMessage: msg,
+          callStatus: 'idle',
+          callerInfo: null,
+          localStream: null,
+          isCallMinimized: false,
+        });
         if (caller) {
           emitCallReject(caller.socketId, 'Failed to acquire media devices');
         }
@@ -407,7 +425,14 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         delete pendingMediaOffers[caller.socketId];
         emitCallReject(caller.socketId, reason || 'User declined call');
       }
-      set({ callStatus: 'idle', callerInfo: null });
+      webrtcManager.stopLocalStream();
+      set({
+        callStatus: 'idle',
+        callerInfo: null,
+        callType: null,
+        localStream: null,
+        isCallMinimized: false,
+      });
     },
 
     endCall: (): void => {
@@ -425,6 +450,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         peerMediaStates: {},
         isMuted: false,
         isCameraOff: false,
+        isCallMinimized: false,
       });
     },
 
@@ -440,6 +466,21 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       webrtcManager.setCameraOff(newCameraOff);
       set({ isCameraOff: newCameraOff });
       emitMediaToggle(get().isMuted, newCameraOff);
+    },
+
+    switchCamera: async (): Promise<void> => {
+      try {
+        const nextMode = await webrtcManager.switchCamera();
+        set({ facingMode: nextMode });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Could not switch camera';
+        set({ errorMessage: msg });
+        throw err;
+      }
+    },
+
+    setCallMinimized: (minimized: boolean): void => {
+      set({ isCallMinimized: minimized });
     },
 
     leaveRoom: async (): Promise<void> => {
@@ -498,6 +539,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         callStatus: 'idle',
         callType: null,
         callerInfo: null,
+        facingMode: 'user',
+        isCallMinimized: false,
         localStream: null,
         remoteStreams: {},
         peerMediaStates: {},
@@ -694,9 +737,14 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         },
         onCallRejected: (data: { fromSocketId: string; reason?: string }) => {
           delete pendingMediaOffers[data.fromSocketId];
+          webrtcManager.stopLocalStream();
           set({
             errorMessage: data.reason || 'Call was declined by peer',
             callStatus: 'idle',
+            callType: null,
+            callerInfo: null,
+            localStream: null,
+            isCallMinimized: false,
           });
         },
         onCallEnded: (data: { fromSocketId: string }) => {
@@ -706,13 +754,15 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
             delete updated[data.fromSocketId];
             const hasRemainingPeers = Object.keys(updated).length > 0;
 
-            if (!hasRemainingPeers && state.callStatus === 'connected') {
+            if (!hasRemainingPeers) {
               webrtcManager.stopLocalStream();
               return {
                 remoteStreams: {},
                 callStatus: 'idle',
                 callType: null,
+                callerInfo: null,
                 localStream: null,
+                isCallMinimized: false,
               };
             }
             return { remoteStreams: updated };
