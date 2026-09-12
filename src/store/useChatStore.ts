@@ -470,8 +470,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
 
     switchCamera: async (): Promise<void> => {
       try {
-        const nextMode = await webrtcManager.switchCamera();
-        set({ facingMode: nextMode });
+        const { facingMode, stream } = await webrtcManager.switchCamera();
+        set({ facingMode, localStream: new MediaStream(stream.getTracks()) });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Could not switch camera';
         set({ errorMessage: msg });

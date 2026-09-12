@@ -40,7 +40,7 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ st
 
     const tryPlay = () => {
       audio.play().catch((err) => {
-        console.warn('[AUDIO] Remote audio autoplay error:', err);
+        console.warn('[AUDIO] Remote audio autoplay pending user gesture:', err);
       });
     };
 
@@ -49,19 +49,53 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ st
     audio.onloadedmetadata = tryPlay;
     audio.oncanplay = tryPlay;
 
-    const audioTracks = stream.getAudioTracks();
-    audioTracks.forEach((track) => {
-      track.addEventListener('unmute', tryPlay);
-    });
+    const bindTracks = () => {
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach((track) => {
+        track.addEventListener('unmute', tryPlay);
+      });
+    };
+
+    bindTracks();
+
+    stream.addEventListener('addtrack', bindTracks);
+
+    // Global touch / click handler to unlock autoplay if restricted by mobile policy
+    const unlockAutoplay = () => {
+      if (audio && audio.paused) {
+        audio.play().catch(() => {});
+      }
+    };
+    window.addEventListener('click', unlockAutoplay, { once: true });
+    window.addEventListener('touchstart', unlockAutoplay, { once: true });
 
     return () => {
+      stream.removeEventListener('addtrack', bindTracks);
+      const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
         track.removeEventListener('unmute', tryPlay);
       });
+      window.removeEventListener('click', unlockAutoplay);
+      window.removeEventListener('touchstart', unlockAutoplay);
     };
   }, [stream]);
 
-  return <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />;
+  return (
+    <audio
+      ref={audioRef}
+      autoPlay
+      playsInline
+      style={{
+        position: 'fixed',
+        top: -9999,
+        left: -9999,
+        width: 1,
+        height: 1,
+        opacity: 0.001,
+        pointerEvents: 'none',
+      }}
+    />
+  );
 };
 
 /**
@@ -320,6 +354,7 @@ const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
   isCameraOff,
   callType,
 }) => {
+  const facingMode = useChatStore((state) => state.facingMode);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -375,7 +410,7 @@ const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          transform: 'scaleX(-1)', // Mirrored selfie preview
+          transform: facingMode === 'environment' ? 'none' : 'scaleX(-1)',
           opacity: showVideo ? 1 : 0,
           transition: 'opacity 0.2s ease-in-out',
           zIndex: 1,

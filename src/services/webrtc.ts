@@ -138,13 +138,13 @@ export class WebRTCManager {
     const transceivers = pc.getTransceivers ? pc.getTransceivers() : [];
 
     stream.getTracks().forEach((track) => {
-      // 1. Exact track sender match
+      // 1. Exact track sender match (track already attached to this sender)
       const exactSender = currentSenders.find((s) => s.track === track);
       if (exactSender) {
         return;
       }
 
-      // 2. Existing sender with same track kind
+      // 2. Existing sender with track of same kind (audio or video)
       const existingSender = currentSenders.find(
         (s) => s.track && s.track.kind === track.kind
       );
@@ -155,14 +155,14 @@ export class WebRTCManager {
         return;
       }
 
-      // 3. Existing transceiver with matching track kind
-      const matchingTransceiver = transceivers.find(
-        (t) =>
-          (t.receiver && t.receiver.track && t.receiver.track.kind === track.kind) ||
-          (t.sender && t.sender.track && t.sender.track.kind === track.kind)
-      );
+      // 3. Existing transceiver for this track kind (even if sender.track is currently null)
+      const matchingTransceiver = transceivers.find((t) => {
+        const tKind = t.receiver?.track?.kind || (t.sender?.track && t.sender.track.kind);
+        return tKind === track.kind;
+      });
+
       if (matchingTransceiver && matchingTransceiver.sender) {
-        if (matchingTransceiver.direction === 'recvonly') {
+        if (matchingTransceiver.direction === 'recvonly' || matchingTransceiver.direction === 'inactive') {
           matchingTransceiver.direction = 'sendrecv';
         }
         matchingTransceiver.sender.replaceTrack(track).catch((err) => {
@@ -171,11 +171,11 @@ export class WebRTCManager {
         return;
       }
 
-      // 4. Fallback to addTrack
+      // 4. Fallback to addTrack if no sender or transceiver exists for this kind
       try {
         pc.addTrack(track, stream);
       } catch (err) {
-        console.warn(`[WebRTC] addTrack error for ${track.kind}:`, err);
+        console.warn(`[WebRTC] addTrack fallback error for ${track.kind}:`, err);
       }
     });
   }
@@ -601,54 +601,119 @@ export class WebRTCManager {
   }
 
   /**
-   * Switch between front and rear cameras.
+   * Switch between front and rear cameras with robust mobile fallbacks.
    */
-  public async switchCamera(targetMode?: 'user' | 'environment'): Promise<'user' | 'environment'> {
+  public async switchCamera(targetMode?: 'user' | 'environment'): Promise<{ facingMode: 'user' | 'environment'; stream: MediaStream }> {
     if (!this.localStream) {
       throw new Error('No active local stream to switch camera');
     }
 
-    const nextMode = targetMode || (this.facingMode === 'user' ? 'environment' : 'user');
+    const currentFacing = this.facingMode;
+    const nextMode: 'user' | 'environment' = targetMode || (currentFacing === 'user' ? 'environment' : 'user');
 
+    console.log(`[WebRTC] Initiating camera switch: current=${currentFacing} -> target=${nextMode}`);
+
+    let newStream: MediaStream | null = null;
+
+    // Strategy 1: exact facingMode constraint
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia({
+      newStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
         video: {
-          facingMode: { ideal: nextMode },
+          facingMode: { exact: nextMode },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
       });
+    } catch (e1) {
+      console.log(`[WebRTC] Strategy 1 (exact facingMode: ${nextMode}) failed, trying Strategy 2 (ideal)...`, e1);
+      // Strategy 2: ideal facingMode constraint
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: nextMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        });
+      } catch (e2) {
+        console.log(`[WebRTC] Strategy 2 (ideal facingMode) failed, trying Strategy 3 (device enumeration)...`, e2);
+        // Strategy 3: deviceId enumeration
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter((d) => d.kind === 'videoinput');
+          const currentTrack = this.localStream.getVideoTracks()[0];
+          const currentDeviceId = currentTrack?.getSettings()?.deviceId;
 
-      const newVideoTrack = newStream.getVideoTracks()[0];
-      if (!newVideoTrack) {
-        throw new Error('No video track found on switched camera device');
-      }
+          let targetDevice = videoDevices.find((d) => d.deviceId !== currentDeviceId);
+          if (!targetDevice && videoDevices.length > 1) {
+            targetDevice = videoDevices[1];
+          }
 
-      // Stop old video tracks
-      const oldVideoTracks = this.localStream.getVideoTracks();
-      oldVideoTracks.forEach((vt) => vt.stop());
-
-      // Replace track on local stream
-      oldVideoTracks.forEach((vt) => this.localStream?.removeTrack(vt));
-      this.localStream.addTrack(newVideoTrack);
-
-      // Replace video track on all peer connection senders
-      this.peerConnections.forEach((pc) => {
-        pc.getSenders().forEach((sender) => {
-          if (sender.track && sender.track.kind === 'video') {
-            sender.replaceTrack(newVideoTrack).catch((err) => {
-              console.warn('[WebRTC] switchCamera replaceTrack error:', err);
+          if (targetDevice) {
+            newStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                deviceId: { exact: targetDevice.deviceId },
+              },
+            });
+          } else {
+            // Strategy 4: standard video true fallback
+            newStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: true,
             });
           }
-        });
-      });
-
-      this.facingMode = nextMode;
-      return nextMode;
-    } catch (err: unknown) {
-      console.warn('[WebRTC] switchCamera failed:', err);
-      throw err;
+        } catch (e3) {
+          console.error('[WebRTC] All camera switch strategies failed:', e3);
+          throw new Error('Camera switch failed: Unable to access requested camera device.');
+        }
+      }
     }
+
+    const newVideoTrack = newStream.getVideoTracks()[0];
+    if (!newVideoTrack) {
+      throw new Error('No video track available on switched camera.');
+    }
+
+    const oldVideoTracks = this.localStream.getVideoTracks();
+
+    // 1. Replace the video track on all peer connection senders
+    const replacePromises: Promise<void>[] = [];
+    this.peerConnections.forEach((pc) => {
+      const videoSender = pc.getSenders().find(
+        (s) =>
+          (s.track && s.track.kind === 'video') ||
+          (pc.getTransceivers &&
+            pc.getTransceivers().find((t) => t.sender === s)?.receiver?.track?.kind === 'video')
+      );
+      if (videoSender) {
+        replacePromises.push(
+          videoSender.replaceTrack(newVideoTrack).catch((err) => {
+            console.warn('[WebRTC] replaceTrack error during camera switch:', err);
+          })
+        );
+      }
+    });
+
+    await Promise.all(replacePromises);
+
+    // 2. Stop old video tracks only after successful replacement
+    oldVideoTracks.forEach((vt) => {
+      try {
+        vt.stop();
+      } catch {}
+      this.localStream?.removeTrack(vt);
+    });
+
+    // 3. Add new video track to local stream
+    this.localStream.addTrack(newVideoTrack);
+
+    this.facingMode = nextMode;
+    console.log(`[WebRTC] Camera switched successfully to ${nextMode}`);
+
+    return { facingMode: nextMode, stream: this.localStream };
   }
 
   /**
