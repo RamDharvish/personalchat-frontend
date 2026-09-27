@@ -386,21 +386,24 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         });
 
         const callerSocketId = caller?.socketId;
-        if (callerSocketId && pendingMediaOffers[callerSocketId]) {
-          const pending = pendingMediaOffers[callerSocketId];
-          delete pendingMediaOffers[callerSocketId];
-          try {
-            const answer = await webrtcManager.handleOffer(callerSocketId, pending.offer);
-            emitAnswer(callerSocketId, answer);
-          } catch (e) {
-            console.error('[WebRTC] Failed to handle pending offer on accept:', e);
-          }
-        }
+        const targetIds = callerSocketId
+          ? [callerSocketId]
+          : Object.keys(pendingMediaOffers).length > 0
+          ? Object.keys(pendingMediaOffers)
+          : get().members.filter((m) => m.socketId !== get().selfSocketId).map((m) => m.socketId);
 
-        if (callerSocketId) {
-          emitCallAccept(callerSocketId);
-        } else {
-          emitCallAccept();
+        for (const targetId of targetIds) {
+          if (pendingMediaOffers[targetId]) {
+            const pending = pendingMediaOffers[targetId];
+            delete pendingMediaOffers[targetId];
+            try {
+              const answer = await webrtcManager.handleOffer(targetId, pending.offer);
+              emitAnswer(targetId, answer);
+            } catch (e) {
+              console.error(`[WebRTC] Failed to handle pending offer for ${targetId} on accept:`, e);
+            }
+          }
+          emitCallAccept(targetId);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Could not accept call';
@@ -607,7 +610,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       webrtcManager.onRemoteStream = (socketId, stream) => {
         console.log(`[VIDEO] Store onRemoteStream updating state for ${socketId}`);
         set((state) => ({
-          remoteStreams: { ...state.remoteStreams, [socketId]: stream },
+          remoteStreams: { ...state.remoteStreams, [socketId]: new MediaStream(stream.getTracks()) },
           callStatus: 'connected',
         }));
       };

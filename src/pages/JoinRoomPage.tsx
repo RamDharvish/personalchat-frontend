@@ -15,23 +15,43 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import LoginRoundedIcon from '@mui/icons-material/LoginRounded';
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
 import DialpadRoundedIcon from '@mui/icons-material/DialpadRounded';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { PageContainer } from '../components/Layout/PageContainer.js';
 import { useChatStore } from '../store/useChatStore.js';
 import { validateDisplayName, validateRoomCode } from '../utils/validation.js';
 
 export const JoinRoomPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+
   const joinRoom = useChatStore((state) => state.joinRoom);
   const isLoading = useChatStore((state) => state.isLoading);
   const serverError = useChatStore((state) => state.errorMessage);
   const clearError = useChatStore((state) => state.clearError);
 
+  const initialCode = (
+    searchParams.get('code') ||
+    (location.state as { code?: string } | null)?.code ||
+    ''
+  )
+    .replace(/\D/g, '')
+    .slice(0, 4);
+
   const [name, setName] = useState('');
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(initialCode);
   const [nameError, setNameError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [touched, setTouched] = useState({ name: false, code: false });
+
+  // Sync room code if query param or location state updates
+  React.useEffect(() => {
+    const raw = searchParams.get('code') || (location.state as { code?: string } | null)?.code || '';
+    const clean = raw.replace(/\D/g, '').slice(0, 4);
+    if (clean) {
+      setCode(clean);
+    }
+  }, [searchParams, location.state]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;

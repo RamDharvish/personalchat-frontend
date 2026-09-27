@@ -124,9 +124,13 @@ export const RoomPage: React.FC = () => {
   // Auto-redirect if not in an active room
   useEffect(() => {
     if (!selfSocketId || !roomCode) {
-      navigate('/join');
+      if (routeRoomCode && routeRoomCode !== '----') {
+        navigate(`/join?code=${routeRoomCode}`, { replace: true });
+      } else {
+        navigate('/', { replace: true });
+      }
     }
-  }, [selfSocketId, roomCode, navigate]);
+  }, [selfSocketId, roomCode, routeRoomCode, navigate]);
 
   // Isolate auto-scroll strictly to the chat timeline container without moving page header
   const scrollToBottom = (smooth = true) => {

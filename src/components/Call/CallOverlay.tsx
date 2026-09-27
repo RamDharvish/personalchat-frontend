@@ -27,58 +27,75 @@ import type { CallType } from '../../types/index.js';
 /**
  * Dedicated Persistent Audio Stream Player for WebRTC remote audio
  */
-export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ stream }) => {
+export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?: string }> = ({
+  stream,
+  socketId,
+}) => {
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !stream) return;
 
+    audio.muted = false;
+    audio.autoplay = true;
+    audio.setAttribute('playsinline', 'true');
+
     if (audio.srcObject !== stream) {
       audio.srcObject = stream;
     }
 
-    const tryPlay = () => {
-      audio.play().catch((err) => {
-        console.warn('[AUDIO] Remote audio autoplay pending user gesture:', err);
-      });
+    const tryPlayAudio = () => {
+      if (audio) {
+        audio.play().catch((err) => {
+          console.warn(`[AUDIO] Remote audio autoplay for ${socketId || 'peer'} pending gesture:`, err);
+        });
+      }
     };
 
-    tryPlay();
+    tryPlayAudio();
 
-    audio.onloadedmetadata = tryPlay;
-    audio.oncanplay = tryPlay;
+    audio.onloadedmetadata = tryPlayAudio;
+    audio.oncanplay = tryPlayAudio;
 
-    const bindTracks = () => {
+    const bindAudioTracks = () => {
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
-        track.addEventListener('unmute', tryPlay);
+        track.addEventListener('unmute', tryPlayAudio);
+        track.addEventListener('mute', tryPlayAudio);
       });
     };
 
-    bindTracks();
+    bindAudioTracks();
+    stream.addEventListener('addtrack', bindAudioTracks);
+    stream.addEventListener('removetrack', bindAudioTracks);
 
-    stream.addEventListener('addtrack', bindTracks);
-
-    // Global touch / click handler to unlock autoplay if restricted by mobile policy
+    // Global touch / click / key handler to unlock autoplay if restricted by browser policy
     const unlockAutoplay = () => {
       if (audio && audio.paused) {
         audio.play().catch(() => {});
       }
     };
-    window.addEventListener('click', unlockAutoplay, { once: true });
-    window.addEventListener('touchstart', unlockAutoplay, { once: true });
+
+    window.addEventListener('click', unlockAutoplay);
+    window.addEventListener('touchstart', unlockAutoplay);
+    window.addEventListener('keydown', unlockAutoplay);
+    window.addEventListener('pointerdown', unlockAutoplay);
 
     return () => {
-      stream.removeEventListener('addtrack', bindTracks);
+      stream.removeEventListener('addtrack', bindAudioTracks);
+      stream.removeEventListener('removetrack', bindAudioTracks);
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach((track) => {
-        track.removeEventListener('unmute', tryPlay);
+        track.removeEventListener('unmute', tryPlayAudio);
+        track.removeEventListener('mute', tryPlayAudio);
       });
       window.removeEventListener('click', unlockAutoplay);
       window.removeEventListener('touchstart', unlockAutoplay);
+      window.removeEventListener('keydown', unlockAutoplay);
+      window.removeEventListener('pointerdown', unlockAutoplay);
     };
-  }, [stream]);
+  }, [stream, socketId]);
 
   return (
     <audio
@@ -99,25 +116,20 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null }> = ({ st
 };
 
 /**
- * Component rendering audio tags for all active remote streams
+ * Component rendering audio tags for all active remote streams.
+ * Always renders audio players for all connected peers regardless of callType or minimization.
  */
 export const RemoteAudioStreams: React.FC = () => {
   const remoteStreams = useChatStore((state) => state.remoteStreams);
-  const callType = useChatStore((state) => state.callType);
-  const isCallMinimized = useChatStore((state) => state.isCallMinimized);
   const streamEntries = Object.entries(remoteStreams);
 
   if (streamEntries.length === 0) return null;
 
   return (
     <>
-      {streamEntries.map(([socketId, stream], index) => {
-        // In a maximized video call, the primary peer's audio is played directly through RemoteVideoView
-        if (callType === 'video' && !isCallMinimized && index === 0) {
-          return null;
-        }
-        return <RemoteAudioPlayer key={socketId} stream={stream} />;
-      })}
+      {streamEntries.map(([socketId, stream]) => (
+        <RemoteAudioPlayer key={socketId} stream={stream} socketId={socketId} />
+      ))}
     </>
   );
 };
@@ -138,7 +150,10 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
   callType,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [videoTrackCount, setVideoTrackCount] = useState(0);
+  const [hasLiveVideoTrack, setHasLiveVideoTrack] = useState<boolean>(() => {
+    if (!stream) return false;
+    return stream.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled);
+  });
 
   useEffect(() => {
     const video = videoRef.current;
@@ -146,7 +161,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
     video.playsInline = true;
     video.autoplay = true;
-    video.muted = false; // Primary remote video plays audio and video directly
+    video.muted = true; // Video element is muted so browser autoplay policy never blocks video frames; audio is played by RemoteAudioStreams
 
     if (stream) {
       if (video.srcObject !== stream) {
@@ -163,17 +178,17 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
   useEffect(() => {
     if (!stream) {
-      setVideoTrackCount(0);
+      setHasLiveVideoTrack(false);
       return;
     }
 
     const checkTrackState = () => {
       const vTracks = stream.getVideoTracks();
       const liveTracks = vTracks.filter((t) => t.readyState === 'live' && t.enabled);
-      setVideoTrackCount(liveTracks.length);
+      setHasLiveVideoTrack(liveTracks.length > 0);
 
       const video = videoRef.current;
-      if (video) {
+      if (video && stream) {
         if (video.srcObject !== stream) {
           video.srcObject = stream;
         }
@@ -205,7 +220,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
   }, [stream]);
 
   const showVideo =
-    callType === 'video' && !isCameraOff && Boolean(stream) && videoTrackCount > 0;
+    callType === 'video' && !isCameraOff && Boolean(stream) && hasLiveVideoTrack;
 
   return (
     <Box
@@ -225,6 +240,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         ref={videoRef}
         autoPlay
         playsInline
+        muted
         onLoadedMetadata={() => {
           videoRef.current?.play().catch(() => {});
         }}

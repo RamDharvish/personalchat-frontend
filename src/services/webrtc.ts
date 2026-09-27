@@ -6,6 +6,9 @@ export const ICE_SERVERS: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
   ],
   iceCandidatePoolSize: 10,
 };
@@ -125,17 +128,17 @@ export class WebRTCManager {
 
   /**
    * Safely attach media tracks from a stream to a peer connection.
-   * If a sender/transceiver for the track kind already exists, replaceTrack is used to prevent duplicate senders.
+   * If a sender/transceiver for the track kind already exists, replaceTrack is awaited to prevent duplicate senders.
    */
-  public attachStreamToPeerConnection(pc: RTCPeerConnection, stream: MediaStream): void {
+  public async attachStreamToPeerConnection(pc: RTCPeerConnection, stream: MediaStream): Promise<void> {
     const currentSenders = pc.getSenders();
     const transceivers = pc.getTransceivers ? pc.getTransceivers() : [];
 
-    stream.getTracks().forEach((track) => {
+    for (const track of stream.getTracks()) {
       // 1. Exact track sender match (track already attached to this sender)
       const exactSender = currentSenders.find((s) => s.track === track);
       if (exactSender) {
-        return;
+        continue;
       }
 
       // 2. Existing sender with track of same kind (audio or video)
@@ -143,10 +146,12 @@ export class WebRTCManager {
         (s) => s.track && s.track.kind === track.kind
       );
       if (existingSender) {
-        existingSender.replaceTrack(track).catch((err) => {
+        try {
+          await existingSender.replaceTrack(track);
+        } catch (err) {
           console.warn(`[WebRTC] replaceTrack error for ${track.kind}:`, err);
-        });
-        return;
+        }
+        continue;
       }
 
       // 3. Existing transceiver for this track kind (even if sender.track is currently null)
@@ -156,13 +161,13 @@ export class WebRTCManager {
       });
 
       if (matchingTransceiver && matchingTransceiver.sender) {
-        if (matchingTransceiver.direction === 'recvonly' || matchingTransceiver.direction === 'inactive') {
-          matchingTransceiver.direction = 'sendrecv';
-        }
-        matchingTransceiver.sender.replaceTrack(track).catch((err) => {
+        matchingTransceiver.direction = 'sendrecv';
+        try {
+          await matchingTransceiver.sender.replaceTrack(track);
+        } catch (err) {
           console.warn(`[WebRTC] transceiver replaceTrack error for ${track.kind}:`, err);
-        });
-        return;
+        }
+        continue;
       }
 
       // 4. Fallback to addTrack if no sender or transceiver exists for this kind
@@ -171,7 +176,7 @@ export class WebRTCManager {
       } catch (err) {
         console.warn(`[WebRTC] addTrack fallback error for ${track.kind}:`, err);
       }
-    });
+    }
   }
 
   /**
@@ -360,7 +365,8 @@ export class WebRTCManager {
 
       const notifyUpdate = () => {
         if (this.onRemoteStream && stream) {
-          this.onRemoteStream(remoteSocketId, stream);
+          // Provide fresh MediaStream reference with all tracks so React components immediately detect track changes
+          this.onRemoteStream(remoteSocketId, new MediaStream(stream.getTracks()));
         }
       };
 
@@ -408,9 +414,11 @@ export class WebRTCManager {
     if (pending.length > 0) {
       console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates for ${remoteSocketId}`);
       pending.forEach((candidate) => {
-        pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((e) => {
-          console.warn(`[WebRTC] Failed to add queued ICE candidate for ${remoteSocketId}:`, e);
-        });
+        if (candidate && candidate.candidate) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((e) => {
+            console.warn(`[WebRTC] Failed to add queued ICE candidate for ${remoteSocketId}:`, e);
+          });
+        }
       });
       this.pendingCandidates.delete(remoteSocketId);
     }
@@ -466,7 +474,7 @@ export class WebRTCManager {
     const pc = this.getOrCreatePeerConnection(remoteSocketId, true);
 
     if (this.localStream) {
-      this.attachStreamToPeerConnection(pc, this.localStream);
+      await this.attachStreamToPeerConnection(pc, this.localStream);
     }
 
     console.log(`[VIDEO] VIDEO_OFFER_SENT Creating offer for peer ${remoteSocketId} [type: ${callType}]`);
@@ -493,7 +501,7 @@ export class WebRTCManager {
 
     // Attach local media tracks to the transceivers created by setRemoteDescription
     if (this.localStream) {
-      this.attachStreamToPeerConnection(pc, this.localStream);
+      await this.attachStreamToPeerConnection(pc, this.localStream);
     }
 
     // Drain queued ICE candidates
@@ -502,7 +510,9 @@ export class WebRTCManager {
       console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote offer`);
       for (const cand of pending) {
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(cand));
+          if (cand && cand.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
+          }
         } catch {
           // Ignore
         }
@@ -534,7 +544,9 @@ export class WebRTCManager {
         console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote answer`);
         for (const cand of pending) {
           try {
-            await pc.addIceCandidate(new RTCIceCandidate(cand));
+            if (cand && cand.candidate) {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            }
           } catch {
             // Ignore
           }
@@ -546,20 +558,28 @@ export class WebRTCManager {
 
   /**
    * Add ICE candidate from remote peer.
+   * If peer connection is currently in have-local-offer state (waiting for remote answer),
+   * candidates are safely queued until remote description is set and signaling state is stable.
    */
   public async handleIceCandidate(
     remoteSocketId: string,
     candidate: RTCIceCandidateInit
   ): Promise<void> {
+    if (!candidate || !candidate.candidate) return;
     const pc = this.peerConnections.get(remoteSocketId);
-    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+    if (pc && pc.remoteDescription && pc.remoteDescription.type && pc.signalingState !== 'have-local-offer') {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
-        console.warn(`[WebRTC] Error adding ICE candidate from ${remoteSocketId}:`, err);
+        console.warn(`[WebRTC] Error adding ICE candidate from ${remoteSocketId}, queueing:`, err);
+        const queue = this.pendingCandidates.get(remoteSocketId) || [];
+        queue.push(candidate);
+        this.pendingCandidates.set(remoteSocketId, queue);
       }
     } else {
-      console.log(`[WebRTC] Queuing ICE candidate from ${remoteSocketId} until remote description is set`);
+      console.log(
+        `[WebRTC] Queuing ICE candidate from ${remoteSocketId} until remote description is set (signalingState: ${pc?.signalingState})`
+      );
       const queue = this.pendingCandidates.get(remoteSocketId) || [];
       queue.push(candidate);
       this.pendingCandidates.set(remoteSocketId, queue);
