@@ -645,6 +645,22 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       }
 
       cleanupSocketListeners = registerRoomSocketEvents({
+        onMemberJoined: (member: SanitizedMember) => {
+          set((state) => {
+            if (state.members.some((m) => m.socketId === member.socketId)) {
+              return state;
+            }
+            return { members: [...state.members, member] };
+          });
+          syncMeshPeers();
+        },
+        onMemberLeft: (data: { socketId: string; displayName: string; newHostSocketId?: string }) => {
+          set((state) => ({
+            members: state.members.filter((m) => m.socketId !== data.socketId),
+            isHost: data.newHostSocketId ? data.newHostSocketId === state.selfSocketId : state.isHost,
+          }));
+          syncMeshPeers();
+        },
         onMemberListUpdated: (members: SanitizedMember[]) => {
           const selfId = get().selfSocketId;
           const currentMember = members.find((m) => m.socketId === selfId);

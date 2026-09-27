@@ -114,12 +114,13 @@ export const RoomPage: React.FC = () => {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Cleanup microphone on unmount if actively recording
+  // Cleanup microphone and leave room session on unmount
   useEffect(() => {
     return () => {
       voiceRecorder.cancelRecording();
+      leaveRoom().catch(() => {});
     };
-  }, []);
+  }, [leaveRoom]);
 
   // Auto-redirect if not in an active room
   useEffect(() => {
@@ -976,13 +977,15 @@ export const RoomPage: React.FC = () => {
                             label={msg.text}
                             size="small"
                             sx={{
-                              backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                              backgroundColor: 'rgba(255, 255, 255, 0.05)',
                               color: '#94a3b8',
                               fontSize: '0.72rem',
                               height: 'auto',
                               py: 0.4,
-                              px: 1,
-                              '& .MuiChip-label': { whiteSpace: 'normal' },
+                              px: 1.2,
+                              border: '1px solid rgba(255, 255, 255, 0.06)',
+                              borderRadius: 3,
+                              '& .MuiChip-label': { whiteSpace: 'normal', textAlign: 'center' },
                             }}
                           />
                         </Box>
@@ -1000,21 +1003,37 @@ export const RoomPage: React.FC = () => {
                             display: 'flex',
                             flexDirection: 'column',
                             alignItems: isSelf ? 'flex-end' : 'flex-start',
+                            maxWidth: '100%',
+                            mb: 0.5,
                           }}
                         >
+                          {!isSelf && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                color: '#38bdf8',
+                                fontSize: '0.72rem',
+                                fontWeight: 700,
+                                mb: 0.3,
+                                px: 1,
+                              }}
+                            >
+                              {msg.senderName}
+                            </Typography>
+                          )}
+                          <FileCard item={fileItem} />
                           <Typography
                             variant="caption"
                             sx={{
-                              color: isSelf ? '#a5b4fc' : '#94a3b8',
-                              fontSize: '0.7rem',
-                              fontWeight: 600,
-                              mb: 0.3,
+                              color: '#94a3b8',
+                              fontSize: '0.68rem',
+                              fontFamily: '"JetBrains Mono", monospace',
+                              mt: 0.3,
                               px: 1,
                             }}
                           >
-                            {isSelf ? 'You' : msg.senderName} • {formatTimestamp(msg.timestamp)}
+                            {formatTimestamp(msg.timestamp)}
                           </Typography>
-                          <FileCard item={fileItem} />
                         </Box>
                       );
                     }
@@ -1029,32 +1048,25 @@ export const RoomPage: React.FC = () => {
                           flexDirection: 'column',
                           alignItems: isSelf ? 'flex-end' : 'flex-start',
                           position: 'relative',
+                          maxWidth: '100%',
+                          mb: 0.5,
                         }}
                       >
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8, mb: 0.3, px: 1 }}>
+                        {!isSelf && (
                           <Typography
                             variant="caption"
                             sx={{
-                              color: isSelf ? '#a5b4fc' : '#94a3b8',
-                              fontSize: '0.7rem',
-                              fontWeight: 600,
+                              color: '#38bdf8',
+                              fontSize: '0.72rem',
+                              fontWeight: 700,
+                              mb: 0.3,
+                              px: 1,
+                              letterSpacing: '0.02em',
                             }}
                           >
-                            {isSelf ? 'You' : msg.senderName} • {formatTimestamp(msg.timestamp)}
+                            {msg.senderName}
                           </Typography>
-                          {msg.isEdited && !msg.isDeleted && (
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                color: '#94a3b8',
-                                fontSize: '0.68rem',
-                                fontStyle: 'italic',
-                              }}
-                            >
-                              (edited)
-                            </Typography>
-                          )}
-                        </Box>
+                        )}
 
                         {isEditing ? (
                           <Box
@@ -1124,9 +1136,7 @@ export const RoomPage: React.FC = () => {
                               maxWidth: { xs: '85%', sm: '70%' },
                               p: 1.2,
                               px: 1.8,
-                              borderRadius: 3,
-                              borderTopRightRadius: isSelf ? 0 : 12,
-                              borderTopLeftRadius: isSelf ? 12 : 0,
+                              borderRadius: isSelf ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
                               backgroundColor: 'rgba(255, 255, 255, 0.03)',
                               border: '1px dashed rgba(255, 255, 255, 0.12)',
                             }}
@@ -1149,7 +1159,7 @@ export const RoomPage: React.FC = () => {
                               alignItems: 'center',
                               gap: 0.5,
                               flexDirection: isSelf ? 'row' : 'row-reverse',
-                              maxWidth: { xs: '90%', sm: '75%' },
+                              maxWidth: { xs: '90%', sm: '75%', md: '65%' },
                               '&:hover .message-action-btn': {
                                 opacity: 1,
                               },
@@ -1177,23 +1187,69 @@ export const RoomPage: React.FC = () => {
 
                             <Box
                               sx={{
-                                p: 1.3,
-                                px: 1.6,
-                                borderRadius: 3,
-                                borderTopRightRadius: isSelf ? 0 : 12,
-                                borderTopLeftRadius: isSelf ? 12 : 0,
-                                backgroundColor: isSelf ? '#4f46e5' : 'rgba(30, 41, 59, 0.95)',
+                                p: '10px 14px 6px 14px',
+                                borderRadius: isSelf ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                                background: isSelf
+                                  ? 'linear-gradient(135deg, #4f46e5 0%, #6366f1 100%)'
+                                  : 'rgba(30, 41, 59, 0.85)',
+                                backdropFilter: !isSelf ? 'blur(10px)' : undefined,
+                                border: isSelf
+                                  ? '1px solid rgba(255, 255, 255, 0.15)'
+                                  : '1px solid rgba(255, 255, 255, 0.08)',
                                 color: '#ffffff',
                                 boxShadow: isSelf
-                                  ? '0 4px 14px rgba(79, 70, 229, 0.3)'
-                                  : '0 4px 14px rgba(0, 0, 0, 0.25)',
+                                  ? '0 3px 12px rgba(79, 70, 229, 0.32)'
+                                  : '0 3px 12px rgba(0, 0, 0, 0.25)',
                                 wordBreak: 'break-word',
                                 whiteSpace: 'pre-wrap',
+                                position: 'relative',
                               }}
                             >
-                              <Typography variant="body2" sx={{ lineHeight: 1.45, fontSize: '0.92rem' }}>
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  lineHeight: 1.5,
+                                  fontSize: '0.92rem',
+                                  color: '#f8fafc',
+                                  letterSpacing: '0.01em',
+                                }}
+                              >
                                 {msg.text}
                               </Typography>
+
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'flex-end',
+                                  gap: 0.5,
+                                  mt: 0.3,
+                                  userSelect: 'none',
+                                }}
+                              >
+                                {msg.isEdited && (
+                                  <Typography
+                                    variant="caption"
+                                    sx={{
+                                      color: isSelf ? 'rgba(255, 255, 255, 0.65)' : '#94a3b8',
+                                      fontSize: '0.65rem',
+                                      fontStyle: 'italic',
+                                    }}
+                                  >
+                                    edited
+                                  </Typography>
+                                )}
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    color: isSelf ? 'rgba(255, 255, 255, 0.7)' : '#94a3b8',
+                                    fontSize: '0.68rem',
+                                    fontFamily: '"JetBrains Mono", monospace',
+                                  }}
+                                >
+                                  {formatTimestamp(msg.timestamp)}
+                                </Typography>
+                              </Box>
                             </Box>
                           </Box>
                         )}
@@ -1230,79 +1286,145 @@ export const RoomPage: React.FC = () => {
               />
 
               {/* ======================================================
-                  MESSAGE COMPOSER (WhatsApp-like)
+                  MESSAGE COMPOSER (WhatsApp-like & Responsive)
                  ====================================================== */}
               {isRecordingVoice ? (
                 <Box
                   sx={{
-                    p: { xs: 1, sm: 1.5 },
-                    pb: { xs: 'max(10px, env(safe-area-inset-bottom))', sm: 1.5 },
-                    borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                    p: { xs: 1, sm: 1.25 },
+                    pb: { xs: 'max(8px, env(safe-area-inset-bottom))', sm: 1.25 },
+                    borderTop: '1px solid rgba(239, 68, 68, 0.25)',
                     backgroundColor: 'rgba(15, 23, 42, 0.98)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    gap: 1.5,
+                    gap: 1,
                     flexShrink: 0,
                     zIndex: 10,
                   }}
                 >
-                  <Stack direction="row" spacing={1.2} alignItems="center">
+                  {/* Left: Recording Dot + Timer Pill */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, flexShrink: 0 }}>
                     <Box
                       sx={{
                         width: 10,
                         height: 10,
                         borderRadius: '50%',
                         backgroundColor: '#ef4444',
-                        boxShadow: '0 0 8px #ef4444',
-                        animation: 'pulse 1.5s infinite',
+                        boxShadow: '0 0 10px #ef4444',
+                        animation: 'pulse 1.2s infinite',
+                        flexShrink: 0,
                       }}
                     />
-                    <Typography variant="body2" fontWeight={700} sx={{ color: '#f87171', fontSize: '0.85rem' }}>
-                      Recording...
+                    <Typography
+                      variant="body2"
+                      fontWeight={700}
+                      sx={{
+                        color: '#ef4444',
+                        fontSize: { xs: '0.78rem', sm: '0.85rem' },
+                        display: { xs: 'none', sm: 'inline' },
+                        flexShrink: 0,
+                      }}
+                    >
+                      Recording
                     </Typography>
-                    <Chip
-                      label={`${formatRecordingTime(recordingDuration)} / 05:00`}
-                      size="small"
+                    <Box
                       sx={{
-                        backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                        color: '#fca5a5',
-                        fontFamily: '"JetBrains Mono", monospace',
-                        fontWeight: 700,
-                        fontSize: '0.75rem',
-                        height: 22,
-                      }}
-                    />
-                  </Stack>
-
-                  <Stack direction="row" spacing={1}>
-                    <Button
-                      id="cancel-voice-record-btn"
-                      variant="text"
-                      color="inherit"
-                      size="small"
-                      onClick={handleCancelRecordingVoice}
-                      sx={{ color: '#cbd5e1', fontSize: '0.8rem' }}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      id="stop-and-send-voice-btn"
-                      variant="contained"
-                      size="small"
-                      startIcon={<SendRoundedIcon />}
-                      onClick={handleStopAndSendVoice}
-                      sx={{
-                        backgroundColor: '#ef4444',
-                        color: '#ffffff',
-                        fontWeight: 700,
-                        fontSize: '0.8rem',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        px: 1,
+                        py: 0.3,
                         borderRadius: 2,
-                        '&:hover': { backgroundColor: '#dc2626' },
+                        backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
                       }}
                     >
-                      Send
-                    </Button>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          color: '#fca5a5',
+                          fontFamily: '"JetBrains Mono", monospace',
+                          fontWeight: 700,
+                          fontSize: '0.78rem',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        {formatRecordingTime(recordingDuration)}
+                      </Typography>
+                    </Box>
+                  </Box>
+
+                  {/* Center Waveform Animation */}
+                  <Box
+                    sx={{
+                      display: { xs: 'none', sm: 'flex' },
+                      alignItems: 'center',
+                      gap: 0.4,
+                      flex: 1,
+                      justifyContent: 'center',
+                      px: 1,
+                      maxWidth: 120,
+                    }}
+                  >
+                    {[12, 20, 8, 24, 16, 10, 18, 14].map((h, i) => (
+                      <Box
+                        key={i}
+                        sx={{
+                          width: 3,
+                          height: `${h}px`,
+                          backgroundColor: '#ef4444',
+                          borderRadius: 1,
+                          opacity: 0.7,
+                          animation: `pulse ${0.6 + (i % 4) * 0.2}s infinite alternate ease-in-out`,
+                        }}
+                      />
+                    ))}
+                  </Box>
+
+                  {/* Right: Cancel & Send Action Buttons */}
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                    <Tooltip title="Cancel recording">
+                      <IconButton
+                        id="cancel-voice-record-btn"
+                        size="small"
+                        onClick={handleCancelRecordingVoice}
+                        sx={{
+                          color: '#94a3b8',
+                          backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                          p: 0.8,
+                          '&:hover': {
+                            color: '#f87171',
+                            backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                          },
+                        }}
+                      >
+                        <DeleteOutlineRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+
+                    <Tooltip title="Send Voice Message">
+                      <Button
+                        id="stop-and-send-voice-btn"
+                        variant="contained"
+                        size="small"
+                        endIcon={<SendRoundedIcon sx={{ fontSize: '0.95rem !important' }} />}
+                        onClick={handleStopAndSendVoice}
+                        sx={{
+                          backgroundColor: '#ef4444',
+                          color: '#ffffff',
+                          fontWeight: 700,
+                          fontSize: '0.8rem',
+                          borderRadius: 2.5,
+                          px: 1.5,
+                          py: 0.6,
+                          minWidth: 'auto',
+                          boxShadow: '0 2px 10px rgba(239, 68, 68, 0.35)',
+                          '&:hover': { backgroundColor: '#dc2626' },
+                        }}
+                      >
+                        Send
+                      </Button>
+                    </Tooltip>
                   </Stack>
                 </Box>
               ) : (

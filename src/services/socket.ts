@@ -51,9 +51,25 @@ export const connectSocket = (): Promise<Socket> => {
 
 export const disconnectSocket = (): void => {
   if (socket && socket.connected) {
+    try {
+      socket.emit('room:leave');
+    } catch {}
     socket.disconnect();
   }
 };
+
+if (typeof window !== 'undefined') {
+  const handlePageUnload = () => {
+    if (socket && socket.connected) {
+      try {
+        socket.emit('room:leave');
+        socket.disconnect();
+      } catch {}
+    }
+  };
+  window.addEventListener('beforeunload', handlePageUnload);
+  window.addEventListener('pagehide', handlePageUnload);
+}
 
 /**
  * Socket.IO Room Engine API Handlers
