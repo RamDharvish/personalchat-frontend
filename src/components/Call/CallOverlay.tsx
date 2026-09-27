@@ -34,44 +34,75 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?
   const audioRef = useRef<HTMLAudioElement>(null);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !stream) return;
+    if (!stream) return;
 
-    audio.muted = false;
-    audio.autoplay = true;
-    audio.setAttribute('playsinline', 'true');
+    // 1. Direct Web Audio API hardware routing (guarantees audio output even with browser autoplay restrictions)
+    let audioCtx: AudioContext | null = null;
+    try {
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (AudioContextClass) {
+        audioCtx = new AudioContextClass();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = 1.0;
+        source.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
 
-    if (audio.srcObject !== stream) {
-      audio.srcObject = stream;
+        const tryResumeCtx = () => {
+          if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
+        };
+
+        tryResumeCtx();
+      }
+    } catch (webAudioErr) {
+      console.warn('[AUDIO] Web Audio API context initialization note:', webAudioErr);
     }
 
-    const tryPlayAudio = () => {
-      if (audio) {
-        audio.play().catch((err) => {
-          console.warn(`[AUDIO] Remote audio autoplay for ${socketId || 'peer'} pending gesture:`, err);
-        });
+    // 2. HTMLAudioElement playback
+    const audio = audioRef.current;
+    if (audio) {
+      audio.muted = false;
+      audio.defaultMuted = false;
+      audio.volume = 1.0;
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('webkit-playsinline', 'true');
+
+      if (audio.srcObject !== stream) {
+        console.log(`[AUDIO] Attaching stream ${stream.id} to audio element for ${socketId || 'peer'}`);
+        audio.srcObject = stream;
       }
-    };
 
-    tryPlayAudio();
+      const tryPlayAudio = () => {
+        if (audio) {
+          audio.play().catch((err) => {
+            console.warn(`[AUDIO] HTML audio autoplay for ${socketId || 'peer'} pending gesture:`, err);
+          });
+        }
+      };
 
-    audio.onloadedmetadata = tryPlayAudio;
-    audio.oncanplay = tryPlayAudio;
+      tryPlayAudio();
+      audio.onloadedmetadata = tryPlayAudio;
+      audio.oncanplay = tryPlayAudio;
+      audio.onplay = () => {
+        console.log(`[AUDIO] Audio playback active for ${socketId || 'peer'}`);
+      };
 
-    const bindAudioTracks = () => {
-      const audioTracks = stream.getAudioTracks();
-      audioTracks.forEach((track) => {
-        track.addEventListener('unmute', tryPlayAudio);
-        track.addEventListener('mute', tryPlayAudio);
+      const tracks = stream.getAudioTracks();
+      tracks.forEach((t) => {
+        t.addEventListener('unmute', tryPlayAudio);
       });
-    };
+    }
 
-    bindAudioTracks();
-    stream.addEventListener('addtrack', bindAudioTracks);
-    stream.addEventListener('removetrack', bindAudioTracks);
-
-    // Global touch / click / key handler to unlock autoplay if restricted by browser policy
+    // 3. Document-level gesture listener to unlock both AudioContext and HTMLAudioElement
     const unlockAutoplay = () => {
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
       if (audio && audio.paused) {
         audio.play().catch(() => {});
       }
@@ -83,17 +114,15 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?
     window.addEventListener('pointerdown', unlockAutoplay);
 
     return () => {
-      stream.removeEventListener('addtrack', bindAudioTracks);
-      stream.removeEventListener('removetrack', bindAudioTracks);
-      const audioTracks = stream.getAudioTracks();
-      audioTracks.forEach((track) => {
-        track.removeEventListener('unmute', tryPlayAudio);
-        track.removeEventListener('mute', tryPlayAudio);
-      });
       window.removeEventListener('click', unlockAutoplay);
       window.removeEventListener('touchstart', unlockAutoplay);
       window.removeEventListener('keydown', unlockAutoplay);
       window.removeEventListener('pointerdown', unlockAutoplay);
+      if (audioCtx) {
+        try {
+          audioCtx.close().catch(() => {});
+        } catch {}
+      }
     };
   }, [stream, socketId]);
 
@@ -103,12 +132,12 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?
       autoPlay
       playsInline
       style={{
-        position: 'fixed',
-        top: -9999,
-        left: -9999,
-        width: 1,
-        height: 1,
-        opacity: 0.001,
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '1px',
+        height: '1px',
+        opacity: 0,
         pointerEvents: 'none',
       }}
     />

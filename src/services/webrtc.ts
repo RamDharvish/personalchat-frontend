@@ -338,7 +338,7 @@ export class WebRTCManager {
     // Remote media track listener
     pc.ontrack = (event) => {
       console.log(
-        `[VIDEO] Remote ontrack fired from ${remoteSocketId}: kind=${event.track.kind}, readyState=${event.track.readyState}, enabled=${event.track.enabled}`
+        `[AUDIO/VIDEO] Remote ontrack fired from ${remoteSocketId}: kind=${event.track.kind}, readyState=${event.track.readyState}, enabled=${event.track.enabled}`
       );
       let stream = event.streams[0];
       if (!stream) {
@@ -352,7 +352,6 @@ export class WebRTCManager {
         }
         stream = existingStream;
       } else {
-        // Ensure stream is recorded in remoteStreams map
         if (!stream.getTracks().some((t) => t.id === event.track.id)) {
           stream.addTrack(event.track);
         }
@@ -360,32 +359,12 @@ export class WebRTCManager {
       }
 
       console.log(
-        `[VIDEO] Remote stream assigned for ${remoteSocketId}: streamId=${stream.id}, tracks=${stream.getTracks().length}`
+        `[AUDIO/VIDEO] Remote stream assigned for ${remoteSocketId}: streamId=${stream.id}, tracks=${stream.getTracks().length}`
       );
 
-      const notifyUpdate = () => {
-        if (this.onRemoteStream && stream) {
-          // Provide fresh MediaStream reference with all tracks so React components immediately detect track changes
-          this.onRemoteStream(remoteSocketId, new MediaStream(stream.getTracks()));
-        }
-      };
-
-      // Notify immediately
-      notifyUpdate();
-
-      // Ensure that when packets start flowing and track un-mutes, listeners receive the event
-      event.track.onunmute = () => {
-        console.log(`[VIDEO] Remote track unmuted from ${remoteSocketId}: kind=${event.track.kind}`);
-        notifyUpdate();
-      };
-      event.track.onmute = () => {
-        console.log(`[VIDEO] Remote track muted from ${remoteSocketId}: kind=${event.track.kind}`);
-        notifyUpdate();
-      };
-      event.track.onended = () => {
-        console.log(`[VIDEO] Remote track ended from ${remoteSocketId}: kind=${event.track.kind}`);
-        notifyUpdate();
-      };
+      if (this.onRemoteStream && stream) {
+        this.onRemoteStream(remoteSocketId, stream);
+      }
     };
 
     // Connection state changes
@@ -504,10 +483,14 @@ export class WebRTCManager {
       await this.attachStreamToPeerConnection(pc, this.localStream);
     }
 
-    // Drain queued ICE candidates
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    console.log(`[VIDEO] VIDEO_ANSWER_SENT Created local answer for peer ${remoteSocketId}`);
+
+    // Drain queued ICE candidates after setting local answer description
     const pending = this.pendingCandidates.get(remoteSocketId) || [];
     if (pending.length > 0) {
-      console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote offer`);
+      console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote offer and local answer`);
       for (const cand of pending) {
         try {
           if (cand && cand.candidate) {
@@ -520,9 +503,6 @@ export class WebRTCManager {
       this.pendingCandidates.delete(remoteSocketId);
     }
 
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    console.log(`[VIDEO] VIDEO_ANSWER_SENT Created local answer for peer ${remoteSocketId}`);
     return answer;
   }
 

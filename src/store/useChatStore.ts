@@ -608,9 +608,9 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       };
 
       webrtcManager.onRemoteStream = (socketId, stream) => {
-        console.log(`[VIDEO] Store onRemoteStream updating state for ${socketId}`);
+        console.log(`[AUDIO/VIDEO] Store onRemoteStream updating state for ${socketId} (streamId: ${stream.id})`);
         set((state) => ({
-          remoteStreams: { ...state.remoteStreams, [socketId]: new MediaStream(stream.getTracks()) },
+          remoteStreams: { ...state.remoteStreams, [socketId]: stream },
           callStatus: 'connected',
         }));
       };
