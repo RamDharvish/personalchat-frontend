@@ -332,32 +332,50 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         </Box>
       )}
 
-      {/* Mute badge for remote peer */}
-      {isMuted && (
-        <Box
-          sx={{
-            position: 'absolute',
-            top: 16,
-            left: 16,
-            zIndex: 10,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1,
-            backgroundColor: 'rgba(239, 68, 68, 0.85)',
-            backdropFilter: 'blur(8px)',
-            color: '#ffffff',
-            px: 1.2,
-            py: 0.5,
-            borderRadius: 2,
-            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
-          }}
-        >
-          <MicOffRoundedIcon sx={{ fontSize: 16 }} />
-          <Typography variant="caption" fontWeight={600}>
-            {displayName} is muted
-          </Typography>
-        </Box>
-      )}
+      {/* Sleek Floating Bottom-Left Remote Peer Name & Mute Indicator */}
+      <Box
+        sx={{
+          position: 'absolute',
+          bottom: { xs: 88, sm: 96 },
+          left: { xs: 16, sm: 24 },
+          zIndex: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
+          px: 1.4,
+          py: 0.6,
+          borderRadius: 2,
+          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+        }}
+      >
+        <Typography variant="caption" fontWeight={700} sx={{ color: '#ffffff', fontSize: '0.8rem' }}>
+          {displayName}
+        </Typography>
+
+        {isMuted && (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.4,
+              backgroundColor: 'rgba(239, 68, 68, 0.25)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              color: '#f87171',
+              px: 0.8,
+              py: 0.2,
+              borderRadius: 1,
+            }}
+          >
+            <MicOffRoundedIcon sx={{ fontSize: 13 }} />
+            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.68rem', lineHeight: 1 }}>
+              Muted
+            </Typography>
+          </Box>
+        )}
+      </Box>
     </Box>
   );
 };
@@ -365,6 +383,7 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 interface LocalPipPreviewProps {
   stream: MediaStream | null;
   displayName: string;
+  isMuted: boolean;
   isCameraOff: boolean;
   callType: CallType | null;
 }
@@ -372,6 +391,7 @@ interface LocalPipPreviewProps {
 const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
   stream,
   displayName,
+  isMuted,
   isCameraOff,
   callType,
 }) => {
@@ -457,23 +477,50 @@ const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
         </Box>
       )}
 
-      {/* "You" Pill Indicator */}
+      {/* "You" & Mute Pill Indicator */}
       <Box
         sx={{
           position: 'absolute',
           bottom: 6,
           left: 6,
-          px: 0.8,
-          py: 0.2,
-          borderRadius: 1,
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          backdropFilter: 'blur(4px)',
+          right: 6,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
           zIndex: 3,
+          pointerEvents: 'none',
         }}
       >
-        <Typography variant="caption" sx={{ color: '#ffffff', fontSize: '0.65rem', fontWeight: 600 }}>
-          You
-        </Typography>
+        <Box
+          sx={{
+            px: 0.8,
+            py: 0.2,
+            borderRadius: 1,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <Typography variant="caption" sx={{ color: '#ffffff', fontSize: '0.65rem', fontWeight: 600 }}>
+            You
+          </Typography>
+        </Box>
+
+        {isMuted && (
+          <Box
+            sx={{
+              width: 20,
+              height: 20,
+              borderRadius: '50%',
+              backgroundColor: '#ef4444',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 2px 6px rgba(239, 68, 68, 0.6)',
+            }}
+          >
+            <MicOffRoundedIcon sx={{ color: '#ffffff', fontSize: 12 }} />
+          </Box>
+        )}
       </Box>
     </Box>
   );
@@ -711,10 +758,10 @@ export const CallOverlay: React.FC = () => {
           background: 'linear-gradient(to bottom, rgba(7, 11, 20, 0.9) 0%, transparent 100%)',
         }}
       >
-        <Stack direction="row" spacing={1.5} alignItems="center">
+        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
           <Box
             sx={{
-              display: 'flex',
+              display: 'inline-flex',
               alignItems: 'center',
               gap: 0.8,
               backgroundColor: 'rgba(255, 255, 255, 0.08)',
@@ -722,6 +769,7 @@ export const CallOverlay: React.FC = () => {
               px: 1.5,
               py: 0.5,
               borderRadius: 3,
+              flexShrink: 0,
             }}
           >
             <ShieldRoundedIcon sx={{ color: '#10b981', fontSize: 16 }} />
@@ -730,13 +778,30 @@ export const CallOverlay: React.FC = () => {
             </Typography>
           </Box>
 
-          <Typography variant="body2" sx={{ color: '#cbd5e1', fontWeight: 600 }}>
+          <Typography variant="body2" sx={{ color: '#cbd5e1', fontWeight: 600, whiteSpace: 'nowrap' }}>
             {callStatus === 'calling' ? (
               <span style={{ color: '#fbbf24' }}>Calling {primaryPeerName}...</span>
             ) : (
               <span style={{ color: '#4ade80' }}>Connected • {formatTimer(callDuration)}</span>
             )}
           </Typography>
+
+          {primaryPeerMediaState.isMuted && (
+            <Chip
+              icon={<MicOffRoundedIcon sx={{ fontSize: 13, color: '#f87171 !important' }} />}
+              label={`${primaryPeerName} is muted`}
+              size="small"
+              sx={{
+                height: 24,
+                fontSize: '0.72rem',
+                fontWeight: 600,
+                backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                color: '#f87171',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                backdropFilter: 'blur(8px)',
+              }}
+            />
+          )}
         </Stack>
 
         <Tooltip title="Minimize to Chat">
@@ -747,6 +812,7 @@ export const CallOverlay: React.FC = () => {
               backgroundColor: 'rgba(255, 255, 255, 0.08)',
               color: '#ffffff',
               backdropFilter: 'blur(8px)',
+              flexShrink: 0,
               '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.16)' },
             }}
           >
@@ -781,6 +847,7 @@ export const CallOverlay: React.FC = () => {
             <LocalPipPreview
               stream={localStream}
               displayName={displayName}
+              isMuted={isMuted}
               isCameraOff={isCameraOff}
               callType={callType}
             />
@@ -804,7 +871,9 @@ export const CallOverlay: React.FC = () => {
                   width: { xs: 180, sm: 240 },
                   height: { xs: 180, sm: 240 },
                   borderRadius: '50%',
-                  background: 'radial-gradient(circle, rgba(99, 102, 241, 0.3) 0%, transparent 70%)',
+                  background: primaryPeerMediaState.isMuted
+                    ? 'radial-gradient(circle, rgba(239, 68, 68, 0.2) 0%, transparent 70%)'
+                    : 'radial-gradient(circle, rgba(99, 102, 241, 0.3) 0%, transparent 70%)',
                   animation: 'pulseGlow 2.5s infinite ease-in-out',
                 }}
               />
@@ -812,20 +881,43 @@ export const CallOverlay: React.FC = () => {
                 sx={{
                   width: { xs: 110, sm: 140 },
                   height: { xs: 110, sm: 140 },
-                  bgcolor: '#6366f1',
+                  bgcolor: primaryPeerMediaState.isMuted ? '#475569' : '#6366f1',
                   color: '#ffffff',
                   fontSize: { xs: '3rem', sm: '4rem' },
                   fontWeight: 700,
-                  boxShadow: '0 12px 40px rgba(99, 102, 241, 0.5)',
+                  boxShadow: primaryPeerMediaState.isMuted
+                    ? '0 12px 40px rgba(0, 0, 0, 0.5)'
+                    : '0 12px 40px rgba(99, 102, 241, 0.5)',
                   border: '4px solid rgba(255, 255, 255, 0.15)',
                 }}
               >
                 {primaryPeerName.charAt(0).toUpperCase()}
               </Avatar>
+
+              {primaryPeerMediaState.isMuted && (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    bottom: 4,
+                    right: 4,
+                    width: 36,
+                    height: 36,
+                    borderRadius: '50%',
+                    backgroundColor: '#ef4444',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    boxShadow: '0 4px 12px rgba(239, 68, 68, 0.6)',
+                    border: '2px solid #070b14',
+                  }}
+                >
+                  <MicOffRoundedIcon sx={{ color: '#ffffff', fontSize: 20 }} />
+                </Box>
+              )}
             </Box>
 
-            <Box sx={{ textAlign: 'center' }}>
-              <Typography variant="h5" fontWeight={800} sx={{ color: '#ffffff', mb: 0.5 }}>
+            <Box sx={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="h5" fontWeight={800} sx={{ color: '#ffffff' }}>
                 {primaryPeerName}
               </Typography>
               <Typography variant="body2" sx={{ color: '#94a3b8', letterSpacing: '0.02em' }}>
@@ -833,6 +925,19 @@ export const CallOverlay: React.FC = () => {
                   ? 'Calling peer...'
                   : `Voice Call Active • ${formatTimer(callDuration)}`}
               </Typography>
+              {primaryPeerMediaState.isMuted && (
+                <Chip
+                  icon={<MicOffRoundedIcon sx={{ fontSize: 13, color: '#f87171 !important' }} />}
+                  label="Microphone muted"
+                  size="small"
+                  sx={{
+                    mt: 1,
+                    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                    color: '#f87171',
+                    border: '1px solid rgba(239, 68, 68, 0.4)',
+                  }}
+                />
+              )}
             </Box>
           </Box>
         )}
