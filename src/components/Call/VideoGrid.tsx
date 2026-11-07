@@ -32,8 +32,8 @@ const VideoTile: React.FC<VideoTileProps> = ({
     if (!video) return;
 
     // Direct DOM property configuration for reliable autoplay
-    video.muted = isSelf;
-    video.defaultMuted = isSelf;
+    video.muted = true;
+    video.defaultMuted = true;
     video.playsInline = true;
     video.autoplay = true;
 
@@ -158,7 +158,7 @@ const VideoTile: React.FC<VideoTileProps> = ({
         ref={videoRef}
         autoPlay
         playsInline
-        muted={isSelf}
+        muted
         onLoadedMetadata={handleMetadataLoaded}
         onCanPlay={handleCanPlay}
         onPlaying={() => {

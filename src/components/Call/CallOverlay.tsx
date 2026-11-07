@@ -25,7 +25,9 @@ import { useChatStore } from '../../store/useChatStore.js';
 import type { CallType } from '../../types/index.js';
 
 /**
- * Dedicated Persistent Audio Stream Player for WebRTC remote audio
+ * Dedicated Audio Stream Player for WebRTC remote audio.
+ * Plays each remote participant's audio cleanly through a single HTMLAudioElement
+ * without duplicate Web Audio hardware output to prevent robotic echo / phasing.
  */
 export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?: string }> = ({
   stream,
@@ -36,73 +38,39 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?
   useEffect(() => {
     if (!stream) return;
 
-    // 1. Direct Web Audio API hardware routing (guarantees audio output even with browser autoplay restrictions)
-    let audioCtx: AudioContext | null = null;
-    try {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (AudioContextClass) {
-        audioCtx = new AudioContextClass();
-        const source = audioCtx.createMediaStreamSource(stream);
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.value = 1.0;
-        source.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        const tryResumeCtx = () => {
-          if (audioCtx && audioCtx.state === 'suspended') {
-            audioCtx.resume().catch(() => {});
-          }
-        };
-
-        tryResumeCtx();
-      }
-    } catch (webAudioErr) {
-      console.warn('[AUDIO] Web Audio API context initialization note:', webAudioErr);
-    }
-
-    // 2. HTMLAudioElement playback
     const audio = audioRef.current;
-    if (audio) {
-      audio.muted = false;
-      audio.defaultMuted = false;
-      audio.volume = 1.0;
-      audio.autoplay = true;
-      audio.setAttribute('playsinline', 'true');
-      audio.setAttribute('webkit-playsinline', 'true');
+    if (!audio) return;
 
-      if (audio.srcObject !== stream) {
-        console.log(`[AUDIO] Attaching stream ${stream.id} to audio element for ${socketId || 'peer'}`);
-        audio.srcObject = stream;
-      }
+    audio.muted = false;
+    audio.defaultMuted = false;
+    audio.volume = 1.0;
+    audio.autoplay = true;
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('webkit-playsinline', 'true');
 
-      const tryPlayAudio = () => {
-        if (audio) {
-          audio.play().catch((err) => {
-            console.warn(`[AUDIO] HTML audio autoplay for ${socketId || 'peer'} pending gesture:`, err);
-          });
-        }
-      };
-
-      tryPlayAudio();
-      audio.onloadedmetadata = tryPlayAudio;
-      audio.oncanplay = tryPlayAudio;
-      audio.onplay = () => {
-        console.log(`[AUDIO] Audio playback active for ${socketId || 'peer'}`);
-      };
-
-      const tracks = stream.getAudioTracks();
-      tracks.forEach((t) => {
-        t.addEventListener('unmute', tryPlayAudio);
-      });
+    if (audio.srcObject !== stream) {
+      console.log(`[AUDIO] Attaching stream ${stream.id} to audio element for ${socketId || 'peer'}`);
+      audio.srcObject = stream;
     }
 
-    // 3. Document-level gesture listener to unlock both AudioContext and HTMLAudioElement
-    const unlockAutoplay = () => {
-      if (audioCtx && audioCtx.state === 'suspended') {
-        audioCtx.resume().catch(() => {});
+    const tryPlayAudio = () => {
+      if (audio) {
+        audio.play().catch((err) => {
+          console.warn(`[AUDIO] HTML audio autoplay for ${socketId || 'peer'} pending gesture:`, err);
+        });
       }
+    };
+
+    tryPlayAudio();
+    audio.onloadedmetadata = tryPlayAudio;
+    audio.oncanplay = tryPlayAudio;
+
+    const tracks = stream.getAudioTracks();
+    tracks.forEach((t) => {
+      t.addEventListener('unmute', tryPlayAudio);
+    });
+
+    const unlockAutoplay = () => {
       if (audio && audio.paused) {
         audio.play().catch(() => {});
       }
@@ -118,11 +86,9 @@ export const RemoteAudioPlayer: React.FC<{ stream: MediaStream | null; socketId?
       window.removeEventListener('touchstart', unlockAutoplay);
       window.removeEventListener('keydown', unlockAutoplay);
       window.removeEventListener('pointerdown', unlockAutoplay);
-      if (audioCtx) {
-        try {
-          audioCtx.close().catch(() => {});
-        } catch {}
-      }
+      tracks.forEach((t) => {
+        t.removeEventListener('unmute', tryPlayAudio);
+      });
     };
   }, [stream, socketId]);
 
@@ -163,20 +129,29 @@ export const RemoteAudioStreams: React.FC = () => {
   );
 };
 
-interface RemoteVideoViewProps {
+interface CallParticipantTileProps {
   stream: MediaStream | null;
   displayName: string;
-  isMuted: boolean;
-  isCameraOff: boolean;
+  isSelf?: boolean;
+  isMuted?: boolean;
+  isCameraOff?: boolean;
   callType: CallType | null;
+  facingMode?: 'user' | 'environment';
 }
 
-const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
+/**
+ * Flexible, responsive participant tile for both video and audio calls.
+ * Safely plays video with muted={true} so autoplay is never blocked,
+ * while audio playback is handled by RemoteAudioStreams.
+ */
+export const CallParticipantTile: React.FC<CallParticipantTileProps> = ({
   stream,
   displayName,
-  isMuted,
-  isCameraOff,
-  callType,
+  isSelf = false,
+  isMuted = false,
+  isCameraOff = false,
+  callType = 'video',
+  facingMode = 'user',
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [hasLiveVideoTrack, setHasLiveVideoTrack] = useState<boolean>(() => {
@@ -184,27 +159,30 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
     return stream.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled);
   });
 
+  // Attach stream to video DOM element
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     video.playsInline = true;
     video.autoplay = true;
-    video.muted = true; // Video element is muted so browser autoplay policy never blocks video frames; audio is played by RemoteAudioStreams
+    video.muted = true; // Always muted: prevents feedback for self, prevents double audio for remote
+    video.defaultMuted = true;
 
     if (stream) {
       if (video.srcObject !== stream) {
-        console.log(`[VIDEO] RemoteVideoView attaching stream ${stream.id}`);
+        console.log(`[VIDEO] CallParticipantTile attaching stream ${stream.id} for ${displayName}`);
         video.srcObject = stream;
       }
       video.play().catch((err) => {
-        console.warn('[VIDEO] Remote video play error:', err);
+        console.warn(`[VIDEO] Video playback note for ${displayName}:`, err);
       });
     } else {
       video.srcObject = null;
     }
-  }, [stream]);
+  }, [stream, displayName]);
 
+  // Monitor video track presence and status
   useEffect(() => {
     if (!stream) {
       setHasLiveVideoTrack(false);
@@ -213,22 +191,17 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
 
     const checkTrackState = () => {
       const vTracks = stream.getVideoTracks();
-      const liveTracks = vTracks.filter((t) => t.readyState === 'live' && t.enabled);
-      setHasLiveVideoTrack(liveTracks.length > 0);
+      const live = vTracks.some((t) => t.readyState === 'live' && t.enabled);
+      setHasLiveVideoTrack(live);
 
       const video = videoRef.current;
-      if (video && stream) {
-        if (video.srcObject !== stream) {
-          video.srcObject = stream;
-        }
+      if (video && stream && video.srcObject !== stream) {
+        video.srcObject = stream;
         video.play().catch(() => {});
       }
     };
 
     checkTrackState();
-
-    stream.addEventListener('addtrack', checkTrackState);
-    stream.addEventListener('removetrack', checkTrackState);
 
     const vTracks = stream.getVideoTracks();
     vTracks.forEach((t) => {
@@ -238,15 +211,13 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
     });
 
     return () => {
-      stream.removeEventListener('addtrack', checkTrackState);
-      stream.removeEventListener('removetrack', checkTrackState);
       vTracks.forEach((t) => {
         t.removeEventListener('unmute', checkTrackState);
         t.removeEventListener('mute', checkTrackState);
         t.removeEventListener('ended', checkTrackState);
       });
     };
-  }, [stream]);
+  }, [stream, displayName]);
 
   const showVideo =
     callType === 'video' && !isCameraOff && Boolean(stream) && hasLiveVideoTrack;
@@ -257,25 +228,23 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         position: 'relative',
         width: '100%',
         height: '100%',
+        minHeight: 0,
         backgroundColor: '#0a0f1d',
+        borderRadius: 3,
+        overflow: 'hidden',
+        border: '1px solid rgba(255, 255, 255, 0.12)',
+        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        overflow: 'hidden',
       }}
     >
-      {/* Remote Video Stream Element (Positioned absolute with opacity transition, NEVER display: none) */}
+      {/* Video Element */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        onLoadedMetadata={() => {
-          videoRef.current?.play().catch(() => {});
-        }}
-        onCanPlay={() => {
-          videoRef.current?.play().catch(() => {});
-        }}
         style={{
           position: 'absolute',
           top: 0,
@@ -283,13 +252,14 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
           width: '100%',
           height: '100%',
           objectFit: 'cover',
+          transform: isSelf && facingMode !== 'environment' ? 'scaleX(-1)' : 'none',
           opacity: showVideo ? 1 : 0,
           transition: 'opacity 0.25s ease-in-out',
           zIndex: 1,
         }}
       />
 
-      {/* Fallback Display if video is off or loading */}
+      {/* Fallback Display if video is off, audio call, or loading */}
       {!showVideo && (
         <Box
           sx={{
@@ -299,7 +269,8 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 2,
+            gap: 1.5,
+            p: 2,
           }}
         >
           <Box
@@ -313,11 +284,13 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
             <Box
               sx={{
                 position: 'absolute',
-                width: 140,
-                height: 140,
+                width: { xs: 80, sm: 110, md: 130 },
+                height: { xs: 80, sm: 110, md: 130 },
                 borderRadius: '50%',
-                background: 'radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 70%)',
-                animation: 'pulseGlow 2.5s infinite ease-in-out',
+                background: isMuted
+                  ? 'radial-gradient(circle, rgba(239, 68, 68, 0.2) 0%, transparent 70%)'
+                  : 'radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, transparent 70%)',
+                animation: isMuted ? 'none' : 'pulseGlow 2.5s infinite ease-in-out',
                 '@keyframes pulseGlow': {
                   '0%': { transform: 'scale(0.9)', opacity: 0.5 },
                   '50%': { transform: 'scale(1.25)', opacity: 1 },
@@ -327,13 +300,13 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
             />
             <Avatar
               sx={{
-                width: { xs: 90, sm: 110 },
-                height: { xs: 90, sm: 110 },
-                bgcolor: '#4f46e5',
+                width: { xs: 56, sm: 76, md: 90 },
+                height: { xs: 56, sm: 76, md: 90 },
+                bgcolor: isSelf ? '#6366f1' : '#0891b2',
                 color: '#ffffff',
-                fontSize: { xs: '2.5rem', sm: '3rem' },
+                fontSize: { xs: '1.5rem', sm: '2rem', md: '2.5rem' },
                 fontWeight: 700,
-                boxShadow: '0 8px 32px rgba(79, 70, 229, 0.45)',
+                boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
                 border: '3px solid rgba(255, 255, 255, 0.15)',
               }}
             >
@@ -341,16 +314,28 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
             </Avatar>
           </Box>
 
-          <Typography variant="h6" fontWeight={700} sx={{ color: '#f8fafc', mt: 1 }}>
-            {displayName}
+          <Typography
+            variant="subtitle1"
+            fontWeight={700}
+            noWrap
+            sx={{
+              color: '#f8fafc',
+              fontSize: { xs: '0.85rem', sm: '1rem' },
+              maxWidth: 180,
+              textAlign: 'center',
+            }}
+          >
+            {displayName} {isSelf ? '(You)' : ''}
           </Typography>
 
           {callType === 'video' && isCameraOff && (
             <Chip
-              icon={<VideocamOffRoundedIcon sx={{ fontSize: 14 }} />}
-              label="Camera is off"
+              icon={<VideocamOffRoundedIcon sx={{ fontSize: 13 }} />}
+              label="Camera off"
               size="small"
               sx={{
+                height: 22,
+                fontSize: '0.7rem',
                 backgroundColor: 'rgba(0, 0, 0, 0.65)',
                 color: '#94a3b8',
                 border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -361,27 +346,27 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
         </Box>
       )}
 
-      {/* Sleek Floating Bottom-Left Remote Peer Name & Mute Indicator */}
+      {/* Floating Bottom-Left Name & Mute Overlay */}
       <Box
         sx={{
           position: 'absolute',
-          bottom: { xs: 88, sm: 96 },
-          left: { xs: 16, sm: 24 },
+          bottom: { xs: 8, sm: 12 },
+          left: { xs: 8, sm: 12 },
           zIndex: 10,
           display: 'flex',
           alignItems: 'center',
-          gap: 1,
-          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+          gap: 0.8,
+          backgroundColor: 'rgba(15, 23, 42, 0.8)',
           backdropFilter: 'blur(8px)',
           border: '1px solid rgba(255, 255, 255, 0.12)',
-          px: 1.4,
-          py: 0.6,
+          px: 1.2,
+          py: 0.4,
           borderRadius: 2,
-          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
         }}
       >
-        <Typography variant="caption" fontWeight={700} sx={{ color: '#ffffff', fontSize: '0.8rem' }}>
-          {displayName}
+        <Typography variant="caption" fontWeight={700} sx={{ color: '#ffffff', fontSize: '0.78rem' }}>
+          {displayName} {isSelf ? '(You)' : ''}
         </Typography>
 
         {isMuted && (
@@ -389,17 +374,17 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 0.4,
+              gap: 0.3,
               backgroundColor: 'rgba(239, 68, 68, 0.25)',
               border: '1px solid rgba(239, 68, 68, 0.4)',
               color: '#f87171',
-              px: 0.8,
-              py: 0.2,
+              px: 0.6,
+              py: 0.1,
               borderRadius: 1,
             }}
           >
-            <MicOffRoundedIcon sx={{ fontSize: 13 }} />
-            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.68rem', lineHeight: 1 }}>
+            <MicOffRoundedIcon sx={{ fontSize: 12 }} />
+            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.65rem', lineHeight: 1 }}>
               Muted
             </Typography>
           </Box>
@@ -409,154 +394,46 @@ const RemoteVideoView: React.FC<RemoteVideoViewProps> = ({
   );
 };
 
-interface LocalPipPreviewProps {
+/**
+ * Local Floating Picture-in-Picture Preview (used for 1-on-1 calls)
+ */
+const LocalPipPreview: React.FC<{
   stream: MediaStream | null;
   displayName: string;
   isMuted: boolean;
   isCameraOff: boolean;
   callType: CallType | null;
-}
-
-const LocalPipPreview: React.FC<LocalPipPreviewProps> = ({
-  stream,
-  displayName,
-  isMuted,
-  isCameraOff,
-  callType,
-}) => {
-  const facingMode = useChatStore((state) => state.facingMode);
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    video.muted = true;
-    video.defaultMuted = true;
-    video.playsInline = true;
-    video.autoplay = true;
-
-    if (stream) {
-      if (video.srcObject !== stream) {
-        video.srcObject = stream;
-      }
-      video.play().catch(() => {});
-    } else {
-      video.srcObject = null;
-    }
-  }, [stream]);
-
-  const showVideo = callType === 'video' && !isCameraOff && Boolean(stream);
-
+  facingMode: 'user' | 'environment';
+}> = ({ stream, displayName, isMuted, isCameraOff, callType, facingMode }) => {
   return (
     <Box
       sx={{
         position: 'absolute',
         top: { xs: 70, sm: 80 },
         right: { xs: 16, sm: 24 },
-        width: { xs: 100, sm: 130, md: 150 },
-        height: { xs: 140, sm: 180, md: 200 },
+        width: { xs: 110, sm: 140, md: 160 },
+        height: { xs: 150, sm: 190, md: 210 },
         borderRadius: 3,
         overflow: 'hidden',
-        backgroundColor: '#111726',
-        border: '2px solid rgba(255, 255, 255, 0.25)',
         boxShadow: '0 8px 30px rgba(0, 0, 0, 0.65)',
         zIndex: 20,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backdropFilter: 'blur(8px)',
       }}
     >
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          transform: facingMode === 'environment' ? 'none' : 'scaleX(-1)',
-          opacity: showVideo ? 1 : 0,
-          transition: 'opacity 0.2s ease-in-out',
-          zIndex: 1,
-        }}
+      <CallParticipantTile
+        stream={stream}
+        displayName={displayName}
+        isSelf
+        isMuted={isMuted}
+        isCameraOff={isCameraOff}
+        callType={callType}
+        facingMode={facingMode}
       />
-
-      {!showVideo && (
-        <Box sx={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-          <Avatar
-            sx={{
-              width: 44,
-              height: 44,
-              bgcolor: '#6366f1',
-              fontWeight: 700,
-              fontSize: '1.2rem',
-            }}
-          >
-            {displayName.charAt(0).toUpperCase()}
-          </Avatar>
-          <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.65rem' }}>
-            You (Camera off)
-          </Typography>
-        </Box>
-      )}
-
-      {/* "You" & Mute Pill Indicator */}
-      <Box
-        sx={{
-          position: 'absolute',
-          bottom: 6,
-          left: 6,
-          right: 6,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          zIndex: 3,
-          pointerEvents: 'none',
-        }}
-      >
-        <Box
-          sx={{
-            px: 0.8,
-            py: 0.2,
-            borderRadius: 1,
-            backgroundColor: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(4px)',
-          }}
-        >
-          <Typography variant="caption" sx={{ color: '#ffffff', fontSize: '0.65rem', fontWeight: 600 }}>
-            You
-          </Typography>
-        </Box>
-
-        {isMuted && (
-          <Box
-            sx={{
-              width: 20,
-              height: 20,
-              borderRadius: '50%',
-              backgroundColor: '#ef4444',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 2px 6px rgba(239, 68, 68, 0.6)',
-            }}
-          >
-            <MicOffRoundedIcon sx={{ color: '#ffffff', fontSize: 12 }} />
-          </Box>
-        )}
-      </Box>
     </Box>
   );
 };
 
 /**
- * Minimized Call Bar displayed at the top of the chat timeline
+ * Floating Minimized Call Bar
  */
 export const FloatingCallBar: React.FC = () => {
   const callStatus = useChatStore((state) => state.callStatus);
@@ -566,6 +443,7 @@ export const FloatingCallBar: React.FC = () => {
   const toggleMute = useChatStore((state) => state.toggleMute);
   const endCall = useChatStore((state) => state.endCall);
   const setCallMinimized = useChatStore((state) => state.setCallMinimized);
+  const remoteStreams = useChatStore((state) => state.remoteStreams);
 
   const [callDuration, setCallDuration] = useState(0);
 
@@ -587,6 +465,8 @@ export const FloatingCallBar: React.FC = () => {
     const s = secs % 60;
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
+
+  const totalParticipants = 1 + Object.keys(remoteStreams).length;
 
   return (
     <Box
@@ -634,7 +514,9 @@ export const FloatingCallBar: React.FC = () => {
           <CallRoundedIcon sx={{ color: '#a5b4fc', fontSize: 18 }} />
         )}
         <Typography variant="body2" fontWeight={700} sx={{ color: '#f8fafc' }}>
-          {callStatus === 'calling' ? 'Calling...' : `In Call • ${formatTimer(callDuration)}`}
+          {callStatus === 'calling'
+            ? 'Calling...'
+            : `In Call (${totalParticipants}) • ${formatTimer(callDuration)}`}
         </Typography>
       </Stack>
 
@@ -687,7 +569,9 @@ export const FloatingCallBar: React.FC = () => {
 };
 
 /**
- * Main In-Room Call Overlay (Audio & Video)
+ * Main Full-Screen Call Overlay
+ * Handles 1-on-1 calls (with PIP preview) and multi-participant mesh calls (3 or 4 participants)
+ * in a responsive, unified grid layout where every participant is visible and audible.
  */
 export const CallOverlay: React.FC = () => {
   const theme = useTheme();
@@ -698,6 +582,7 @@ export const CallOverlay: React.FC = () => {
   const isCallMinimized = useChatStore((state) => state.isCallMinimized);
   const isMuted = useChatStore((state) => state.isMuted);
   const isCameraOff = useChatStore((state) => state.isCameraOff);
+  const facingMode = useChatStore((state) => state.facingMode);
   const localStream = useChatStore((state) => state.localStream);
   const remoteStreams = useChatStore((state) => state.remoteStreams);
   const peerMediaStates = useChatStore((state) => state.peerMediaStates);
@@ -746,13 +631,16 @@ export const CallOverlay: React.FC = () => {
     ? peerMediaStates[primaryRemoteSocketId] || { isMuted: false, isCameraOff: false }
     : { isMuted: false, isCameraOff: false };
 
+  const totalParticipants = 1 + remoteSocketIds.length;
+  const isMultiParticipant = remoteSocketIds.length > 1;
+
   const handleSwitchCamera = async () => {
     if (switchingCamera) return;
     setSwitchingCamera(true);
     try {
       await switchCamera();
     } catch {
-      // Ignored / fallback notification
+      // Handled
     } finally {
       setSwitchingCamera(false);
     }
@@ -784,7 +672,7 @@ export const CallOverlay: React.FC = () => {
           alignItems: 'center',
           justifyContent: 'space-between',
           zIndex: 30,
-          background: 'linear-gradient(to bottom, rgba(7, 11, 20, 0.9) 0%, transparent 100%)',
+          background: 'linear-gradient(to bottom, rgba(7, 11, 20, 0.92) 0%, transparent 100%)',
         }}
       >
         <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
@@ -809,28 +697,39 @@ export const CallOverlay: React.FC = () => {
 
           <Typography variant="body2" sx={{ color: '#cbd5e1', fontWeight: 600, whiteSpace: 'nowrap' }}>
             {callStatus === 'calling' ? (
-              <span style={{ color: '#fbbf24' }}>Calling {primaryPeerName}...</span>
+              <span style={{ color: '#fbbf24' }}>
+                {isMultiParticipant ? `Calling ${otherMembers.length} participants...` : `Calling ${primaryPeerName}...`}
+              </span>
             ) : (
-              <span style={{ color: '#4ade80' }}>Connected • {formatTimer(callDuration)}</span>
+              <span style={{ color: '#4ade80' }}>
+                Connected • {totalParticipants} in Call • {formatTimer(callDuration)}
+              </span>
             )}
           </Typography>
 
-          {primaryPeerMediaState.isMuted && (
-            <Chip
-              icon={<MicOffRoundedIcon sx={{ fontSize: 13, color: '#f87171 !important' }} />}
-              label={`${primaryPeerName} is muted`}
-              size="small"
-              sx={{
-                height: 24,
-                fontSize: '0.72rem',
-                fontWeight: 600,
-                backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                color: '#f87171',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                backdropFilter: 'blur(8px)',
-              }}
-            />
-          )}
+          {/* Any muted peer badges */}
+          {remoteSocketIds.map((id) => {
+            const pState = peerMediaStates[id];
+            if (!pState?.isMuted) return null;
+            const m = members.find((mem) => mem.socketId === id);
+            return (
+              <Chip
+                key={`muted-${id}`}
+                icon={<MicOffRoundedIcon sx={{ fontSize: 13, color: '#f87171 !important' }} />}
+                label={`${m?.displayName || 'Peer'} muted`}
+                size="small"
+                sx={{
+                  height: 24,
+                  fontSize: '0.72rem',
+                  fontWeight: 600,
+                  backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                  color: '#f87171',
+                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                  backdropFilter: 'blur(8px)',
+                }}
+              />
+            );
+          })}
         </Stack>
 
         <Tooltip title="Minimize to Chat">
@@ -850,7 +749,7 @@ export const CallOverlay: React.FC = () => {
         </Tooltip>
       </Box>
 
-      {/* Main Call Body */}
+      {/* Main Call Viewport */}
       <Box
         sx={{
           flex: 1,
@@ -859,12 +758,75 @@ export const CallOverlay: React.FC = () => {
           alignItems: 'center',
           justifyContent: 'center',
           minHeight: 0,
+          pt: { xs: 7, sm: 8 },
+          pb: { xs: 11, sm: 12 },
+          px: { xs: 1, sm: 2 },
+          overflow: 'hidden',
         }}
       >
-        {callType === 'video' ? (
-          <>
-            {/* Primary Remote Video View */}
-            <RemoteVideoView
+        {isMultiParticipant ? (
+          /* Multi-Participant Grid (3 or 4 participants) */
+          <Box
+            sx={{
+              width: '100%',
+              height: '100%',
+              display: 'grid',
+              gap: { xs: 1, sm: 1.5 },
+              gridTemplateColumns: totalParticipants <= 2 ? '1fr' : 'repeat(2, 1fr)',
+              gridTemplateRows: totalParticipants <= 2 ? '1fr' : 'repeat(2, 1fr)',
+              justifyContent: 'center',
+              alignItems: 'center',
+              maxHeight: '100%',
+            }}
+          >
+            {/* Local Participant Tile */}
+            <Box
+              sx={{
+                width: '100%',
+                height: '100%',
+                minHeight: 0,
+                ...(totalParticipants === 3
+                  ? {
+                      gridColumn: { xs: 'span 2', sm: 'span 2', md: 'span 1' },
+                    }
+                  : {}),
+              }}
+            >
+              <CallParticipantTile
+                stream={localStream}
+                displayName={displayName}
+                isSelf
+                isMuted={isMuted}
+                isCameraOff={isCameraOff}
+                callType={callType}
+                facingMode={facingMode}
+              />
+            </Box>
+
+            {/* Remote Participants Tiles */}
+            {remoteSocketIds.map((socketId) => {
+              const stream = remoteStreams[socketId] || null;
+              const member = members.find((m) => m.socketId === socketId);
+              const peerName = member ? member.displayName : 'Remote Peer';
+              const peerState = peerMediaStates[socketId] || { isMuted: false, isCameraOff: false };
+
+              return (
+                <Box key={socketId} sx={{ width: '100%', height: '100%', minHeight: 0 }}>
+                  <CallParticipantTile
+                    stream={stream}
+                    displayName={peerName}
+                    isMuted={peerState.isMuted}
+                    isCameraOff={peerState.isCameraOff}
+                    callType={callType}
+                  />
+                </Box>
+              );
+            })}
+          </Box>
+        ) : (
+          /* 1-on-1 Call Layout (Local PIP + Primary Remote Full Screen) */
+          <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+            <CallParticipantTile
               stream={primaryRemoteStream}
               displayName={primaryPeerName}
               isMuted={primaryPeerMediaState.isMuted}
@@ -879,95 +841,8 @@ export const CallOverlay: React.FC = () => {
               isMuted={isMuted}
               isCameraOff={isCameraOff}
               callType={callType}
+              facingMode={facingMode}
             />
-          </>
-        ) : (
-          /* Audio Call Dedicated Central UI */
-          <Box
-            sx={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 3,
-              p: 3,
-            }}
-          >
-            <Box sx={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Box
-                sx={{
-                  position: 'absolute',
-                  width: { xs: 180, sm: 240 },
-                  height: { xs: 180, sm: 240 },
-                  borderRadius: '50%',
-                  background: primaryPeerMediaState.isMuted
-                    ? 'radial-gradient(circle, rgba(239, 68, 68, 0.2) 0%, transparent 70%)'
-                    : 'radial-gradient(circle, rgba(99, 102, 241, 0.3) 0%, transparent 70%)',
-                  animation: 'pulseGlow 2.5s infinite ease-in-out',
-                }}
-              />
-              <Avatar
-                sx={{
-                  width: { xs: 110, sm: 140 },
-                  height: { xs: 110, sm: 140 },
-                  bgcolor: primaryPeerMediaState.isMuted ? '#475569' : '#6366f1',
-                  color: '#ffffff',
-                  fontSize: { xs: '3rem', sm: '4rem' },
-                  fontWeight: 700,
-                  boxShadow: primaryPeerMediaState.isMuted
-                    ? '0 12px 40px rgba(0, 0, 0, 0.5)'
-                    : '0 12px 40px rgba(99, 102, 241, 0.5)',
-                  border: '4px solid rgba(255, 255, 255, 0.15)',
-                }}
-              >
-                {primaryPeerName.charAt(0).toUpperCase()}
-              </Avatar>
-
-              {primaryPeerMediaState.isMuted && (
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    bottom: 4,
-                    right: 4,
-                    width: 36,
-                    height: 36,
-                    borderRadius: '50%',
-                    backgroundColor: '#ef4444',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    boxShadow: '0 4px 12px rgba(239, 68, 68, 0.6)',
-                    border: '2px solid #070b14',
-                  }}
-                >
-                  <MicOffRoundedIcon sx={{ color: '#ffffff', fontSize: 20 }} />
-                </Box>
-              )}
-            </Box>
-
-            <Box sx={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
-              <Typography variant="h5" fontWeight={800} sx={{ color: '#ffffff' }}>
-                {primaryPeerName}
-              </Typography>
-              <Typography variant="body2" sx={{ color: '#94a3b8', letterSpacing: '0.02em' }}>
-                {callStatus === 'calling'
-                  ? 'Calling peer...'
-                  : `Voice Call Active • ${formatTimer(callDuration)}`}
-              </Typography>
-              {primaryPeerMediaState.isMuted && (
-                <Chip
-                  icon={<MicOffRoundedIcon sx={{ fontSize: 13, color: '#f87171 !important' }} />}
-                  label="Microphone muted"
-                  size="small"
-                  sx={{
-                    mt: 1,
-                    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                    color: '#f87171',
-                    border: '1px solid rgba(239, 68, 68, 0.4)',
-                  }}
-                />
-              )}
-            </Box>
           </Box>
         )}
       </Box>
@@ -979,8 +854,8 @@ export const CallOverlay: React.FC = () => {
           bottom: 0,
           left: 0,
           right: 0,
-          pb: { xs: 'max(20px, env(safe-area-inset-bottom))', sm: 3 },
-          pt: 2,
+          pb: { xs: 'max(16px, env(safe-area-inset-bottom))', sm: 2.5 },
+          pt: 1.5,
           px: 2,
           display: 'flex',
           justifyContent: 'center',

@@ -44,6 +44,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
   const syncMeshPeers = async () => {
     const selfId = get().selfSocketId;
     if (!selfId) return;
+    webrtcManager.setSelfSocketId(selfId);
 
     const members = get().members;
     const remoteSocketIds = members.filter((m) => m.socketId !== selfId).map((m) => m.socketId);
@@ -57,13 +58,18 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
 
     const peersToOffer = webrtcManager.syncMeshConnections(remoteSocketIds, selfId);
 
+    const isMediaCallActive =
+      (get().callStatus === 'connected' || get().callStatus === 'calling') && Boolean(get().localStream);
+    const activeCallType = get().callType || 'data';
+
     for (const peerSocketId of peersToOffer) {
       try {
-        console.log(`[WebRTC] Initiating P2P mesh DataChannel offer to ${peerSocketId}...`);
-        const offer = await webrtcManager.createOffer(peerSocketId, 'data');
-        emitOffer(peerSocketId, offer, 'data');
+        const offerType = isMediaCallActive ? activeCallType : 'data';
+        console.log(`[WebRTC] Initiating P2P mesh offer to ${peerSocketId} [type: ${offerType}]...`);
+        const offer = await webrtcManager.createOffer(peerSocketId, offerType);
+        emitOffer(peerSocketId, offer, offerType);
       } catch (err) {
-        console.error(`[WebRTC] Failed to create DataChannel offer for peer ${peerSocketId}:`, err);
+        console.error(`[WebRTC] Failed to create offer for peer ${peerSocketId}:`, err);
       }
     }
   };
@@ -90,6 +96,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
     callStatus: 'idle',
     callType: null,
     callerInfo: null,
+    activeRoomCall: null,
     isMuted: false,
     isCameraOff: false,
     facingMode: 'user',
@@ -101,8 +108,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
     createRoom: async (displayName: string, capacity: RoomCapacity): Promise<string> => {
       set({ isLoading: true, errorMessage: null });
       try {
-        const roomInfo = await createRoomSocket(displayName, capacity);
         get().initSocketAndWebRTCListeners();
+        const roomInfo = await createRoomSocket(displayName, capacity);
 
         set({
           displayName,
@@ -134,8 +141,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
     joinRoom: async (displayName: string, roomCode: string): Promise<void> => {
       set({ isLoading: true, errorMessage: null });
       try {
-        const roomInfo = await joinRoomSocket(displayName, roomCode);
         get().initSocketAndWebRTCListeners();
+        const roomInfo = await joinRoomSocket(displayName, roomCode);
 
         set({
           displayName,
@@ -146,6 +153,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           isHost: roomInfo.isHost,
           isLocked: roomInfo.isLocked,
           members: roomInfo.members,
+          activeRoomCall: roomInfo.activeCall || null,
           messages: [],
           fileTransfers: {},
           pendingDownloadRequests: [],
@@ -328,6 +336,8 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       set({ errorMessage: null });
       try {
         const stream = await webrtcManager.getMediaStream(callType);
+        const selfId = get().selfSocketId;
+        webrtcManager.setSelfSocketId(selfId);
 
         set({
           callStatus: 'calling',
@@ -337,19 +347,22 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           isCameraOff: false,
           facingMode: 'user',
           isCallMinimized: false,
+          activeRoomCall: selfId ? { callType, startedBy: selfId, participantCount: 1 } : null,
         });
 
         emitCallStart(callType);
 
-        const selfId = get().selfSocketId;
         const peers = get().members.filter((m) => m.socketId !== selfId);
 
         for (const peer of peers) {
-          try {
-            const offer = await webrtcManager.createOffer(peer.socketId, callType);
-            emitOffer(peer.socketId, offer, callType);
-          } catch (err) {
-            console.warn(`[WebRTC] Failed to create initial offer for peer ${peer.socketId}:`, err);
+          if (selfId && selfId < peer.socketId) {
+            try {
+              console.log(`[WebRTC] Initiating offer to peer ${peer.socketId} [type: ${callType}]`);
+              const offer = await webrtcManager.createOffer(peer.socketId, callType);
+              emitOffer(peer.socketId, offer, callType);
+            } catch (err) {
+              console.warn(`[WebRTC] Failed to create initial offer for peer ${peer.socketId}:`, err);
+            }
           }
         }
       } catch (err: unknown) {
@@ -368,7 +381,9 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
 
     acceptCall: async (): Promise<void> => {
       const caller = get().callerInfo;
-      const callType = caller?.callType || 'voice';
+      const callType = caller?.callType || get().callType || get().activeRoomCall?.callType || 'video';
+      const selfId = get().selfSocketId;
+      webrtcManager.setSelfSocketId(selfId);
 
       set({ errorMessage: null });
       try {
@@ -385,25 +400,34 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           isCallMinimized: false,
         });
 
-        const callerSocketId = caller?.socketId;
-        const targetIds = callerSocketId
-          ? [callerSocketId]
-          : Object.keys(pendingMediaOffers).length > 0
-          ? Object.keys(pendingMediaOffers)
-          : get().members.filter((m) => m.socketId !== get().selfSocketId).map((m) => m.socketId);
+        // Broadcast to all peers in the room that this user joined the call
+        emitCallAccept();
 
-        for (const targetId of targetIds) {
-          if (pendingMediaOffers[targetId]) {
-            const pending = pendingMediaOffers[targetId];
-            delete pendingMediaOffers[targetId];
+        const peers = get().members.filter((m) => m.socketId !== selfId);
+
+        for (const peer of peers) {
+          const pending = pendingMediaOffers[peer.socketId];
+          if (pending) {
+            delete pendingMediaOffers[peer.socketId];
             try {
-              const answer = await webrtcManager.handleOffer(targetId, pending.offer);
-              emitAnswer(targetId, answer);
+              console.log(`[WebRTC] Answering pending media offer from ${peer.socketId}`);
+              const answer = await webrtcManager.handleOffer(peer.socketId, pending.offer);
+              if (answer) {
+                emitAnswer(peer.socketId, answer);
+              }
             } catch (e) {
-              console.error(`[WebRTC] Failed to handle pending offer for ${targetId} on accept:`, e);
+              console.error(`[WebRTC] Failed to handle pending offer for ${peer.socketId} on accept:`, e);
+            }
+          } else if (selfId && selfId < peer.socketId) {
+            // Designated initiator creates offer to peer
+            try {
+              console.log(`[WebRTC] Designated offerer: creating offer to ${peer.socketId} [type: ${callType}]`);
+              const offer = await webrtcManager.createOffer(peer.socketId, callType);
+              emitOffer(peer.socketId, offer, callType);
+            } catch (err) {
+              console.warn(`[WebRTC] Failed to create offer to ${peer.socketId} on accept:`, err);
             }
           }
-          emitCallAccept(targetId);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Could not accept call';
@@ -441,6 +465,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
     endCall: (): void => {
       emitCallEnd();
       webrtcManager.stopLocalStream();
+      webrtcManager.clearAllMediaSenders();
       for (const k in pendingMediaOffers) {
         delete pendingMediaOffers[k];
       }
@@ -454,6 +479,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         isMuted: false,
         isCameraOff: false,
         isCallMinimized: false,
+        activeRoomCall: null,
       });
     },
 
@@ -542,6 +568,7 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         callStatus: 'idle',
         callType: null,
         callerInfo: null,
+        activeRoomCall: null,
         facingMode: 'user',
         isCallMinimized: false,
         localStream: null,
@@ -608,9 +635,9 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
       };
 
       webrtcManager.onRemoteStream = (socketId, stream) => {
-        console.log(`[AUDIO/VIDEO] Store onRemoteStream updating state for ${socketId} (streamId: ${stream.id})`);
+        console.log(`[AUDIO/VIDEO] Store onRemoteStream updating state for ${socketId} (streamId: ${stream.id}, tracks: ${stream.getTracks().length})`);
         set((state) => ({
-          remoteStreams: { ...state.remoteStreams, [socketId]: stream },
+          remoteStreams: { ...state.remoteStreams, [socketId]: new MediaStream(stream.getTracks()) },
           callStatus: 'connected',
         }));
       };
@@ -655,10 +682,31 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
           syncMeshPeers();
         },
         onMemberLeft: (data: { socketId: string; displayName: string; newHostSocketId?: string }) => {
-          set((state) => ({
-            members: state.members.filter((m) => m.socketId !== data.socketId),
-            isHost: data.newHostSocketId ? data.newHostSocketId === state.selfSocketId : state.isHost,
-          }));
+          delete pendingMediaOffers[data.socketId];
+          webrtcManager.closePeerConnection(data.socketId);
+          set((state) => {
+            const updatedRemoteStreams = { ...state.remoteStreams };
+            delete updatedRemoteStreams[data.socketId];
+            const updatedMediaStates = { ...state.peerMediaStates };
+            delete updatedMediaStates[data.socketId];
+
+            const hasRemainingPeers = Object.keys(updatedRemoteStreams).length > 0;
+            const remainingCallStatus =
+              state.callStatus === 'connected' && !hasRemainingPeers ? 'idle' : state.callStatus;
+            if (state.callStatus === 'connected' && !hasRemainingPeers) {
+              webrtcManager.stopLocalStream();
+            }
+
+            return {
+              members: state.members.filter((m) => m.socketId !== data.socketId),
+              isHost: data.newHostSocketId ? data.newHostSocketId === state.selfSocketId : state.isHost,
+              remoteStreams: updatedRemoteStreams,
+              peerMediaStates: updatedMediaStates,
+              callStatus: remainingCallStatus,
+              localStream: remainingCallStatus === 'idle' ? null : state.localStream,
+              callType: remainingCallStatus === 'idle' ? null : state.callType,
+            };
+          });
           syncMeshPeers();
         },
         onMemberListUpdated: (members: SanitizedMember[]) => {
@@ -750,9 +798,28 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
             emitCallReject(data.fromSocketId, 'Peer is currently in another call');
           }
         },
-        onCallAccepted: async (data: { fromSocketId: string }) => {
+        onCallAccepted: async (data: { fromSocketId: string; callType?: CallType }) => {
           console.log(`[VIDEO] Call accepted by peer ${data?.fromSocketId}`);
-          set({ callStatus: 'connected' });
+          const selfId = get().selfSocketId;
+          const isInCall =
+            (get().callStatus === 'connected' || get().callStatus === 'calling') && Boolean(get().localStream);
+
+          if (isInCall && selfId) {
+            set({ callStatus: 'connected' });
+            // If we are the designated offerer (selfId < fromSocketId), initiate the media offer
+            if (selfId < data.fromSocketId) {
+              try {
+                const currentCallType = get().callType || data.callType || 'video';
+                console.log(
+                  `[WebRTC] Creating media offer to newly accepted peer ${data.fromSocketId} [type: ${currentCallType}]`
+                );
+                const offer = await webrtcManager.createOffer(data.fromSocketId, currentCallType);
+                emitOffer(data.fromSocketId, offer, currentCallType);
+              } catch (err) {
+                console.error(`[WebRTC] Error offering to accepted peer ${data.fromSocketId}:`, err);
+              }
+            }
+          }
         },
         onCallRejected: (data: { fromSocketId: string; reason?: string }) => {
           delete pendingMediaOffers[data.fromSocketId];
@@ -768,40 +835,63 @@ export const useChatStore = create<ChatSessionState>((set, get) => {
         },
         onCallEnded: (data: { fromSocketId: string }) => {
           delete pendingMediaOffers[data.fromSocketId];
+          webrtcManager.clearMediaSendersForPeer(data.fromSocketId);
           set((state) => {
             const updated = { ...state.remoteStreams };
             delete updated[data.fromSocketId];
+            const updatedMediaStates = { ...state.peerMediaStates };
+            delete updatedMediaStates[data.fromSocketId];
+
             const hasRemainingPeers = Object.keys(updated).length > 0;
 
             if (!hasRemainingPeers) {
               webrtcManager.stopLocalStream();
               return {
                 remoteStreams: {},
+                peerMediaStates: {},
                 callStatus: 'idle',
                 callType: null,
                 callerInfo: null,
                 localStream: null,
                 isCallMinimized: false,
+                activeRoomCall: null,
               };
             }
-            return { remoteStreams: updated };
+            return {
+              remoteStreams: updated,
+              peerMediaStates: updatedMediaStates,
+            };
           });
         },
-        onSignalOffer: async (data: { fromSocketId: string; fromDisplayName: string; offer: RTCSessionDescriptionInit; callType: CallType }) => {
+        onSignalOffer: async (data: {
+          fromSocketId: string;
+          fromDisplayName: string;
+          offer: RTCSessionDescriptionInit;
+          callType: CallType;
+        }) => {
           try {
-            console.log(`[VIDEO] Handling offer from ${data.fromDisplayName} (${data.fromSocketId}) [type: ${data.callType}]`);
-            
+            console.log(
+              `[VIDEO] Handling offer from ${data.fromDisplayName} (${data.fromSocketId}) [type: ${data.callType}]`
+            );
+
             if (data.callType === 'data') {
               const answer = await webrtcManager.handleOffer(data.fromSocketId, data.offer);
-              emitAnswer(data.fromSocketId, answer);
+              if (answer) {
+                emitAnswer(data.fromSocketId, answer);
+              }
               return;
             }
 
             // Media offer (voice / video)
-            if (get().localStream || get().callStatus === 'connected') {
-              // Local media already acquired (e.g. user accepted or initiated)
+            const isInCall =
+              (get().callStatus === 'connected' || get().callStatus === 'calling') && Boolean(get().localStream);
+
+            if (isInCall) {
+              // Local media already acquired; answer immediately
               const answer = await webrtcManager.handleOffer(data.fromSocketId, data.offer);
-              emitAnswer(data.fromSocketId, answer);
+              if (answer) {
+                emitAnswer(data.fromSocketId, answer);
+              }
             } else {
               // User has not accepted call yet; queue pending offer and ensure incoming call UI is shown
               console.log(`[VIDEO] Storing pending media offer from ${data.fromSocketId} until user accepts`);

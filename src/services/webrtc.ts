@@ -14,18 +14,24 @@ export const ICE_SERVERS: RTCConfiguration = {
 };
 
 export class WebRTCManager {
+  private selfSocketId: string | null = null;
   private localStream: MediaStream | null = null;
   private peerConnections = new Map<string, RTCPeerConnection>();
   private dataChannels = new Map<string, RTCDataChannel>();
   private remoteStreams = new Map<string, MediaStream>();
   private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
   private channelOpenListeners = new Set<(socketId: string) => void>();
+  private makingOffer = new Map<string, boolean>();
 
   public onIceCandidate?: (toSocketId: string, candidate: RTCIceCandidateInit) => void;
   public onRemoteStream?: (socketId: string, stream: MediaStream) => void;
   public onRemoteStreamRemoved?: (socketId: string) => void;
   public onConnectionStateChange?: (socketId: string, state: RTCPeerConnectionState) => void;
   public onDataChannelStateChange?: (socketId: string, state: RTCDataChannelState) => void;
+
+  public setSelfSocketId(id: string | null): void {
+    this.selfSocketId = id;
+  }
 
   /**
    * Request local microphone / camera access with graceful error handling.
@@ -338,32 +344,34 @@ export class WebRTCManager {
     // Remote media track listener
     pc.ontrack = (event) => {
       console.log(
-        `[AUDIO/VIDEO] Remote ontrack fired from ${remoteSocketId}: kind=${event.track.kind}, readyState=${event.track.readyState}, enabled=${event.track.enabled}`
+        `[AUDIO/VIDEO] Remote ontrack fired from ${remoteSocketId}: kind=${event.track.kind}, id=${event.track.id}, readyState=${event.track.readyState}, enabled=${event.track.enabled}`
       );
-      let stream = event.streams[0];
-      if (!stream) {
-        let existingStream = this.remoteStreams.get(remoteSocketId);
-        if (!existingStream) {
-          existingStream = new MediaStream();
-          this.remoteStreams.set(remoteSocketId, existingStream);
-        }
-        if (!existingStream.getTracks().some((t) => t.id === event.track.id)) {
-          existingStream.addTrack(event.track);
-        }
-        stream = existingStream;
-      } else {
-        if (!stream.getTracks().some((t) => t.id === event.track.id)) {
-          stream.addTrack(event.track);
-        }
-        this.remoteStreams.set(remoteSocketId, stream);
+      let peerStream = this.remoteStreams.get(remoteSocketId);
+      if (!peerStream) {
+        peerStream = new MediaStream();
+        this.remoteStreams.set(remoteSocketId, peerStream);
       }
 
+      if (!peerStream.getTracks().some((t) => t.id === event.track.id)) {
+        peerStream.addTrack(event.track);
+      }
+
+      event.track.onended = () => {
+        console.log(`[AUDIO/VIDEO] Remote track ${event.track.id} ended for ${remoteSocketId}`);
+        peerStream?.removeTrack(event.track);
+      };
+
+      event.track.onunmute = () => {
+        console.log(`[AUDIO/VIDEO] Remote track ${event.track.id} unmuted for ${remoteSocketId}`);
+        this.syncRemoteReceivers(remoteSocketId, pc);
+      };
+
       console.log(
-        `[AUDIO/VIDEO] Remote stream assigned for ${remoteSocketId}: streamId=${stream.id}, tracks=${stream.getTracks().length}`
+        `[AUDIO/VIDEO] Remote stream updated for ${remoteSocketId}: streamId=${peerStream.id}, totalTracks=${peerStream.getTracks().length}`
       );
 
-      if (this.onRemoteStream && stream) {
-        this.onRemoteStream(remoteSocketId, stream);
+      if (this.onRemoteStream) {
+        this.onRemoteStream(remoteSocketId, peerStream);
       }
     };
 
@@ -387,20 +395,6 @@ export class WebRTCManager {
     };
 
     this.peerConnections.set(remoteSocketId, pc);
-
-    // Drain queued ICE candidates
-    const pending = this.pendingCandidates.get(remoteSocketId) || [];
-    if (pending.length > 0) {
-      console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates for ${remoteSocketId}`);
-      pending.forEach((candidate) => {
-        if (candidate && candidate.candidate) {
-          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch((e) => {
-            console.warn(`[WebRTC] Failed to add queued ICE candidate for ${remoteSocketId}:`, e);
-          });
-        }
-      });
-      this.pendingCandidates.delete(remoteSocketId);
-    }
 
     return pc;
   }
@@ -456,25 +450,47 @@ export class WebRTCManager {
       await this.attachStreamToPeerConnection(pc, this.localStream);
     }
 
-    console.log(`[VIDEO] VIDEO_OFFER_SENT Creating offer for peer ${remoteSocketId} [type: ${callType}]`);
-    const offer = await pc.createOffer(
-      callType === 'data'
-        ? { offerToReceiveAudio: false, offerToReceiveVideo: false }
-        : { offerToReceiveAudio: true, offerToReceiveVideo: callType === 'video' }
-    );
-    await pc.setLocalDescription(offer);
-    return offer;
+    this.makingOffer.set(remoteSocketId, true);
+    try {
+      console.log(`[VIDEO] VIDEO_OFFER_SENT Creating offer for peer ${remoteSocketId} [type: ${callType}]`);
+      const offer = await pc.createOffer(
+        callType === 'data'
+          ? { offerToReceiveAudio: false, offerToReceiveVideo: false }
+          : { offerToReceiveAudio: true, offerToReceiveVideo: callType === 'video' }
+      );
+      await pc.setLocalDescription(offer);
+      return offer;
+    } finally {
+      this.makingOffer.set(remoteSocketId, false);
+    }
   }
 
   /**
    * Receive offer, set remote description, and create answer.
+   * Employs Perfect Negotiation pattern to gracefully resolve offer collisions (glare).
    */
   public async handleOffer(
     remoteSocketId: string,
     offer: RTCSessionDescriptionInit
-  ): Promise<RTCSessionDescriptionInit> {
+  ): Promise<RTCSessionDescriptionInit | null> {
     console.log(`[VIDEO] VIDEO_OFFER_RECEIVED from peer ${remoteSocketId}`);
     const pc = this.getOrCreatePeerConnection(remoteSocketId, false);
+
+    const isPolite = this.selfSocketId ? this.selfSocketId > remoteSocketId : true;
+    const isColliding = this.makingOffer.get(remoteSocketId) || pc.signalingState !== 'stable';
+
+    if (isColliding) {
+      if (!isPolite) {
+        console.warn(`[WebRTC] Glare collision with ${remoteSocketId}: impolite peer ignoring offer`);
+        return null;
+      }
+      console.log(`[WebRTC] Glare collision with ${remoteSocketId}: polite peer rolling back offer`);
+      try {
+        await pc.setLocalDescription({ type: 'rollback' });
+      } catch (err) {
+        console.warn(`[WebRTC] Rollback error for ${remoteSocketId}:`, err);
+      }
+    }
 
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
@@ -488,20 +504,8 @@ export class WebRTCManager {
     console.log(`[VIDEO] VIDEO_ANSWER_SENT Created local answer for peer ${remoteSocketId}`);
 
     // Drain queued ICE candidates after setting local answer description
-    const pending = this.pendingCandidates.get(remoteSocketId) || [];
-    if (pending.length > 0) {
-      console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote offer and local answer`);
-      for (const cand of pending) {
-        try {
-          if (cand && cand.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(cand));
-          }
-        } catch {
-          // Ignore
-        }
-      }
-      this.pendingCandidates.delete(remoteSocketId);
-    }
+    await this.drainPendingCandidates(remoteSocketId, pc);
+    this.syncRemoteReceivers(remoteSocketId, pc);
 
     return answer;
   }
@@ -515,31 +519,37 @@ export class WebRTCManager {
   ): Promise<void> {
     console.log(`[VIDEO] VIDEO_ANSWER_RECEIVED from peer ${remoteSocketId}`);
     const pc = this.peerConnections.get(remoteSocketId);
-    if (pc && pc.signalingState !== 'stable') {
+    if (pc && pc.signalingState === 'have-local-offer') {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      await this.drainPendingCandidates(remoteSocketId, pc);
+      this.syncRemoteReceivers(remoteSocketId, pc);
+    }
+  }
 
-      // Drain queued candidates
-      const pending = this.pendingCandidates.get(remoteSocketId) || [];
-      if (pending.length > 0) {
-        console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates after setting remote answer`);
-        for (const cand of pending) {
-          try {
-            if (cand && cand.candidate) {
-              await pc.addIceCandidate(new RTCIceCandidate(cand));
-            }
-          } catch {
-            // Ignore
+  /**
+   * Drain and apply all pending ICE candidates for a peer after remote description is set.
+   */
+  private async drainPendingCandidates(remoteSocketId: string, pc: RTCPeerConnection): Promise<void> {
+    const pending = this.pendingCandidates.get(remoteSocketId) || [];
+    if (pending.length > 0) {
+      this.pendingCandidates.delete(remoteSocketId);
+      console.log(`[WebRTC] Applying ${pending.length} queued ICE candidates for ${remoteSocketId}`);
+      for (const cand of pending) {
+        try {
+          if (cand && cand.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
           }
+        } catch (err) {
+          console.warn(`[WebRTC] Failed to add queued ICE candidate for ${remoteSocketId}:`, err);
         }
-        this.pendingCandidates.delete(remoteSocketId);
       }
     }
   }
 
   /**
    * Add ICE candidate from remote peer.
-   * If peer connection is currently in have-local-offer state (waiting for remote answer),
-   * candidates are safely queued until remote description is set and signaling state is stable.
+   * If peer connection does not have remoteDescription set yet,
+   * candidates are safely queued until remote description is set.
    */
   public async handleIceCandidate(
     remoteSocketId: string,
@@ -563,6 +573,81 @@ export class WebRTCManager {
       const queue = this.pendingCandidates.get(remoteSocketId) || [];
       queue.push(candidate);
       this.pendingCandidates.set(remoteSocketId, queue);
+    }
+  }
+
+  /**
+   * Synchronizes remote stream tracks from peer connection receivers.
+   * Required for renegotiated calls where transceivers/receivers were previously established.
+   */
+  public syncRemoteReceivers(remoteSocketId: string, pc: RTCPeerConnection): void {
+    const receivers = pc.getReceivers ? pc.getReceivers() : [];
+    const liveTracks = receivers
+      .map((r) => r.track)
+      .filter((t): t is MediaStreamTrack => Boolean(t && t.readyState === 'live'));
+
+    if (liveTracks.length > 0) {
+      let peerStream = this.remoteStreams.get(remoteSocketId);
+      if (!peerStream) {
+        peerStream = new MediaStream();
+        this.remoteStreams.set(remoteSocketId, peerStream);
+      }
+
+      let updated = false;
+      for (const track of liveTracks) {
+        if (!peerStream.getTracks().some((t) => t.id === track.id)) {
+          peerStream.addTrack(track);
+          track.onended = () => {
+            peerStream?.removeTrack(track);
+          };
+          track.onunmute = () => {
+            this.syncRemoteReceivers(remoteSocketId, pc);
+          };
+          updated = true;
+        }
+      }
+
+      if (updated || peerStream.getTracks().length > 0) {
+        console.log(
+          `[AUDIO/VIDEO] syncRemoteReceivers updated stream for ${remoteSocketId} with ${peerStream.getTracks().length} tracks`
+        );
+        if (this.onRemoteStream) {
+          this.onRemoteStream(remoteSocketId, peerStream);
+        }
+      }
+    }
+  }
+
+  /**
+   * Clears media senders and streams across all connected peers when local call ends.
+   */
+  public clearAllMediaSenders(): void {
+    Array.from(this.peerConnections.keys()).forEach((remoteSocketId) => {
+      this.clearMediaSendersForPeer(remoteSocketId);
+    });
+  }
+
+  /**
+   * Clears media senders and stream for a specific peer when they leave the call,
+   * preserving DataChannel if still connected.
+   */
+  public clearMediaSendersForPeer(remoteSocketId: string): void {
+    const pc = this.peerConnections.get(remoteSocketId);
+    if (pc) {
+      pc.getSenders().forEach((sender) => {
+        if (sender.track) {
+          sender.replaceTrack(null).catch(() => {});
+        }
+      });
+    }
+    const stream = this.remoteStreams.get(remoteSocketId);
+    if (stream) {
+      this.remoteStreams.delete(remoteSocketId);
+    }
+    this.pendingCandidates.delete(remoteSocketId);
+    this.makingOffer.delete(remoteSocketId);
+    if (this.onRemoteStreamRemoved) {
+      this.onRemoteStreamRemoved(remoteSocketId);
     }
   }
 
@@ -718,16 +803,29 @@ export class WebRTCManager {
   public closePeerConnection(remoteSocketId: string): void {
     const pc = this.peerConnections.get(remoteSocketId);
     if (pc) {
-      pc.close();
+      try {
+        pc.close();
+      } catch {}
       this.peerConnections.delete(remoteSocketId);
     }
     const dc = this.dataChannels.get(remoteSocketId);
     if (dc) {
-      dc.close();
+      try {
+        dc.close();
+      } catch {}
       this.dataChannels.delete(remoteSocketId);
     }
-    this.remoteStreams.delete(remoteSocketId);
+    const stream = this.remoteStreams.get(remoteSocketId);
+    if (stream) {
+      stream.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+      this.remoteStreams.delete(remoteSocketId);
+    }
     this.pendingCandidates.delete(remoteSocketId);
+    this.makingOffer.delete(remoteSocketId);
     if (this.onRemoteStreamRemoved) {
       this.onRemoteStreamRemoved(remoteSocketId);
     }

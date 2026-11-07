@@ -78,6 +78,7 @@ export const RoomPage: React.FC = () => {
 
   // WebRTC Call State
   const callStatus = useChatStore((state) => state.callStatus);
+  const activeRoomCall = useChatStore((state) => state.activeRoomCall);
   const startCall = useChatStore((state) => state.startCall);
 
   const leaveRoom = useChatStore((state) => state.leaveRoom);
@@ -827,7 +828,26 @@ export const RoomPage: React.FC = () => {
 
               {/* Desktop Actions */}
               <Stack direction="row" spacing={1} alignItems="center">
-                {!isCallActive && (
+                {!isCallActive && activeRoomCall && (
+                  <Button
+                    id="join-active-call-btn"
+                    variant="contained"
+                    size="small"
+                    startIcon={activeRoomCall.callType === 'video' ? <VideocamRoundedIcon /> : <CallRoundedIcon />}
+                    onClick={() => handleStartCall(activeRoomCall.callType)}
+                    sx={{
+                      backgroundColor: '#10b981',
+                      color: '#ffffff',
+                      fontWeight: 700,
+                      animation: 'pulse 1.8s infinite',
+                      '&:hover': { backgroundColor: '#059669' },
+                    }}
+                  >
+                    Join {activeRoomCall.callType === 'video' ? 'Video' : 'Voice'} Call
+                  </Button>
+                )}
+
+                {!isCallActive && !activeRoomCall && (
                   <>
                     <Tooltip title="Start Voice Call">
                       <Button
@@ -927,6 +947,46 @@ export const RoomPage: React.FC = () => {
                 backgroundColor: '#0a0f1d',
               }}
             >
+              {/* Ongoing Call Announcement Banner for late joiners */}
+              {!isCallActive && activeRoomCall && (
+                <Alert
+                  severity="info"
+                  icon={activeRoomCall.callType === 'video' ? <VideocamRoundedIcon /> : <CallRoundedIcon />}
+                  action={
+                    <Button
+                      id="banner-join-call-btn"
+                      variant="contained"
+                      size="small"
+                      onClick={() => handleStartCall(activeRoomCall.callType)}
+                      sx={{
+                        backgroundColor: '#10b981',
+                        color: '#ffffff',
+                        fontWeight: 700,
+                        textTransform: 'none',
+                        fontSize: '0.8rem',
+                        '&:hover': { backgroundColor: '#059669' },
+                      }}
+                    >
+                      Join Call
+                    </Button>
+                  }
+                  sx={{
+                    borderRadius: 0,
+                    py: 0.6,
+                    px: 2,
+                    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                    color: '#34d399',
+                    borderBottom: '1px solid rgba(16, 185, 129, 0.25)',
+                    alignItems: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Typography variant="body2" fontWeight={600} sx={{ color: '#34d399', fontSize: '0.85rem' }}>
+                    A {activeRoomCall.callType === 'video' ? 'video' : 'voice'} call is currently active in this room.
+                  </Typography>
+                </Alert>
+              )}
+
               {/* Message Timeline List */}
               <Box
                 ref={chatScrollContainerRef}

@@ -101,6 +101,11 @@ export interface RoomInfoResponse {
   isLocked: boolean;
   members: SanitizedMember[];
   selfSocketId: string;
+  activeCall?: {
+    callType: CallType;
+    startedBy: string;
+    participantCount: number;
+  } | null;
 }
 
 export interface SocketAckResponse<T = unknown> {
@@ -131,6 +136,7 @@ export interface ChatSessionState {
   callStatus: CallStatus;
   callType: CallType | null;
   callerInfo: CallerInfo | null;
+  activeRoomCall: { callType: CallType; startedBy: string; participantCount: number } | null;
   isMuted: boolean;
   isCameraOff: boolean;
   facingMode: 'user' | 'environment';

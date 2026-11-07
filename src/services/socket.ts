@@ -276,7 +276,7 @@ export const registerRoomSocketEvents = (handlers: {
   onTyping?: (data: TypingEvent) => void;
   // WebRTC
   onIncomingCall?: (data: { fromSocketId: string; fromDisplayName: string; callType: CallType }) => void;
-  onCallAccepted?: (data: { fromSocketId: string }) => void;
+  onCallAccepted?: (data: { fromSocketId: string; callType?: CallType }) => void;
   onCallRejected?: (data: { fromSocketId: string; reason?: string }) => void;
   onCallEnded?: (data: { fromSocketId: string }) => void;
   onSignalOffer?: (data: { fromSocketId: string; fromDisplayName: string; offer: RTCSessionDescriptionInit; callType: CallType }) => void;
